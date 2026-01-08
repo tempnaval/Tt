@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Voxel Architect v7.2 - Menu Fixed</title>
+<title>Voxel Architect v7.3 - Original Pinch</title>
 <style>
 body{margin:0;background:#000;overflow:hidden;font-family:'Courier New',monospace;}
 #input_video{position:absolute;width:100vw;height:100vh;object-fit:cover;transform:scaleX(-1);z-index:1;}
@@ -15,7 +15,7 @@ text-shadow:0 0 10px #00f0ff;border-left:3px solid #00f0ff;padding-left:15px;bac
 </head>
 <body>
 <div id="ui">
-<div>BIO_SYNC: ARCHITECT_OS_v7.2</div>
+<div>BIO_SYNC: ARCHITECT_OS_v7.3</div>
 <div>STATE: <span id="mode" class="stat-val">INITIALIZING</span></div>
 <div>VOXELS: <span id="count" class="stat-val">0</span></div>
 </div>
@@ -133,8 +133,8 @@ function onResults(results){
 
     if(rHand){
         const indexTip=rHand[8], middleTip=rHand[12], thumbTip=rHand[4];
-        const twoFingers=getDist(indexTip,middleTip)<0.15; // looser threshold
-        const pinchDist=getDist(indexTip,thumbTip);
+        const twoFingers=getDist(indexTip,middleTip)<0.05; // original tight
+        const pinchDist=getDist(indexTip,thumbTip)<0.05; // original tight
 
         // --- Menu Open ---
         if(!menuOpen && twoFingers){ menuHoldTimer+=16; drawHUDCircle(bioCtx,indexTip.x*bioCanvas.width,indexTip.y*bioCanvas.height,menuHoldTimer/MENU_HOLD,"#00ffcc"); }
@@ -157,7 +157,7 @@ function onResults(results){
             bioCtx.fillStyle="#ff0000"; bioCtx.fillText("-",cx+25,cy-25);
 
             // --- Pinch Selection ---
-            if(pinchDist<0.15){
+            if(pinchDist){
                 const thumbX=thumbTip.x*bioCanvas.width, thumbY=thumbTip.y*bioCanvas.height;
                 if(thumbX>=cx-60 && thumbX<=cx-10 && thumbY>=cy-60 && thumbY<=cy-10){ selectHoldTimer+=16; drawHUDCircle(bioCtx,thumbX,thumbY,selectHoldTimer/SELECT_HOLD,"#00ff00"); if(selectHoldTimer>=SELECT_HOLD){ selectedTool=(selectedTool==='add')?null:'add'; selectHoldTimer=0; } }
                 else if(thumbX>=cx+10 && thumbX<=cx+60 && thumbY>=cy-60 && thumbY<=cy-10){ selectHoldTimer+=16; drawHUDCircle(bioCtx,thumbX,thumbY,selectHoldTimer/SELECT_HOLD,"#00ff00"); if(selectHoldTimer>=SELECT_HOLD){ selectedTool=(selectedTool==='delete')?null:'delete'; selectHoldTimer=0; } }
@@ -171,7 +171,7 @@ function onResults(results){
         }
 
         // --- Use Selected Tool ---
-        if(!menuOpen && selectedTool && pinchDist<0.18){ // looser pinch
+        if(!menuOpen && selectedTool && pinchDist){ 
             buildHoldTimer+=16;
             drawHUDCircle(bioCtx,indexTip.x*bioCanvas.width,indexTip.y*bioCanvas.height,buildHoldTimer/BUILD_HOLD,"#00ffcc");
 
