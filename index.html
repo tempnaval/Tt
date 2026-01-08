@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Voxel Architect v1.7.1 - Pinch Midpoint</title>
+    <title>Voxel Architect v2.1.0 - Multi-Spectral Sync</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
         #input_video { position: absolute; width: 100vw; height: 100vh; object-fit: cover; transform: scaleX(-1); z-index: 1; }
@@ -19,10 +19,10 @@
 </head>
 <body>
     <div id="ui">
-        <div>VOXEL_ARCHITECT_v1.7.1</div>
+        <div>VOXEL_ARCHITECT_v2.1.0</div>
         <div>TOOL: <span id="active_mode" class="stat-val">INIT</span></div>
+        <div>COLOR: <span id="active_color" class="stat-val" style="color:#00f0ff">CYAN</span></div>
         <div>VOXELS: <span id="count" class="stat-val">0</span></div>
-        <div>LOC: <span id="face_val" class="stat-val">PINCH_SYNC</span></div>
     </div>
 
     <video id="input_video" autoplay playsinline></video>
@@ -38,6 +38,7 @@
         const bioCanvas = document.getElementById('biometric_canvas');
         const bioCtx = bioCanvas.getContext('2d');
         const modeEl = document.getElementById('active_mode');
+        const colorEl = document.getElementById('active_color');
         const countEl = document.getElementById('count');
 
         const scene = new THREE.Scene();
@@ -48,12 +49,15 @@
         const voxelGroup = new THREE.Group();
         scene.add(voxelGroup);
 
+        const palette = [0x00f0ff, 0xff3366, 0x00ff66, 0xffcc00, 0xff00ff];
+        const colorNames = ["CYAN", "ROSE", "NEON", "GOLD", "VOID"];
+        let colorIdx = 0;
         let gridSize = 1.2; 
         const placedVoxels = new Map();
         
         const ghostVoxel = new THREE.Mesh(
             new THREE.BoxGeometry(1, 1, 1),
-            new THREE.MeshPhongMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.5, emissive: 0x00ffcc, emissiveIntensity: 0.4 })
+            new THREE.MeshPhongMaterial({ color: palette[0], transparent: true, opacity: 0.5, emissive: palette[0], emissiveIntensity: 0.4 })
         );
         scene.add(ghostVoxel);
 
@@ -63,36 +67,21 @@
         scene.add(sun);
         camera.position.z = 25;
 
-        let toolMode = 1; 
-        let menuOpen = false;
-        let menuPos = { x: 0, y: 0 };
-        let isGrabbing = false;
-        let grabOffset = new THREE.Vector3();
-        let slideStartX = null;
-        let startVal = null;
+        let toolMode = 1, menuOpen = false, paletteOpen = false;
+        let menuPos = { x: 0, y: 0 }, palPos = { x: 0, y: 0 };
+        let isGrabbing = false, grabOffset = new THREE.Vector3();
+        let slideStartX = null, startVal = null;
         
-        let menuTimer = 0, actionTimer = 0, grabTimer = 0;
+        let menuTimer = 0, actionTimer = 0, grabTimer = 0, palTimer = 0;
         const HOLD_DURATION = 150;
         const TRIGGER_DIST = 0.072;
+        const PROXIMITY_LIMIT = 0.065;
 
         function getDist(p1, p2) { return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2)); }
 
         function drawProgress(ctx, x, y, progress, color) {
-            ctx.beginPath(); ctx.arc(x, y, 22, -Math.PI/2, (-Math.PI/2) + (Math.PI * 2 * progress));
-            ctx.lineWidth = 4; ctx.strokeStyle = color; ctx.stroke();
-        }
-
-        function drawFixedMenu(ctx) {
-            if (!menuOpen) return;
-            const { x, y } = menuPos;
-            ctx.fillStyle = "rgba(0,0,0,0.85)"; ctx.fillRect(x - 130, y - 140, 260, 80);
-            const modes = [{id:1,l:"ADD",c:"#0066ff",o:-100},{id:2,l:"DEL",c:"#ff3333",o:-40},{id:3,l:"SCL",c:"#ffff00",o:20},{id:4,l:"ROT",c:"#ff00ff",o:80}];
-            modes.forEach(m => {
-                ctx.strokeStyle = m.c;
-                if(toolMode === m.id) { ctx.fillStyle = "rgba(0,255,0,0.4)"; ctx.fillRect(x + m.o, y - 110, 40, 40); }
-                ctx.strokeRect(x + m.o, y - 110, 40, 40);
-                ctx.fillStyle = m.c; ctx.font = "10px Courier"; ctx.fillText(m.l, x + m.o + 8, y - 85);
-            });
+            ctx.beginPath(); ctx.arc(x, y, 25, -Math.PI/2, (-Math.PI/2) + (Math.PI * 2 * progress));
+            ctx.lineWidth = 5; ctx.strokeStyle = color; ctx.stroke();
         }
 
         function onResults(results) {
@@ -107,7 +96,6 @@
                 if(hand.label === 'Right') rHand = landmarks;
             });
 
-            // MOVE (Left Hand Fist)
             if (lHand) {
                 const isFist = lHand[8].y > lHand[6].y && lHand[12].y > lHand[10].y;
                 const lx = lHand[9].x * bioCanvas.width, ly = lHand[9].y * bioCanvas.height;
@@ -121,86 +109,108 @@
                 } else { grabTimer = 0; isGrabbing = false; }
             }
 
-            // RIGHT HAND (Logic)
             if (rHand) {
-                const thumb = rHand[4], index = rHand[8], middle = rHand[12];
-                const menuPinch = getDist(index, middle) < TRIGGER_DIST;
-                const actionPinch = getDist(thumb, index) < TRIGGER_DIST;
+                const thumb = rHand[4], index = rHand[8], mid = rHand[12], ring = rHand[16], pinky = rHand[20];
                 
-                // PINCH MIDPOINT CALCULATION
+                const isIsolated = (p1, p2, others) => {
+                    if (getDist(p1, p2) > TRIGGER_DIST) return false;
+                    return others.every(o => getDist(p1, o) > PROXIMITY_LIMIT && getDist(p2, o) > PROXIMITY_LIMIT);
+                };
+
+                const menuPinch = isIsolated(index, mid, [thumb, ring, pinky]);
+                const actionPinch = isIsolated(thumb, index, [mid, ring, pinky]);
+                const palPinch = isIsolated(thumb, mid, [index, ring, pinky]);
+                
                 const midX = (thumb.x + index.x) / 2;
                 const midY = (thumb.y + index.y) / 2;
-                const mx = midX * bioCanvas.width;
-                const my = midY * bioCanvas.height;
+                const mx = midX * bioCanvas.width, my = midY * bioCanvas.height;
 
-                if (menuPinch) {
-                    menuTimer += 16; drawProgress(bioCtx, mx, my, Math.min(menuTimer/HOLD_DURATION, 1), "#00f0ff");
-                    if (menuTimer >= HOLD_DURATION) { menuOpen = !menuOpen; if (menuOpen) menuPos = { x: mx, y: my }; menuTimer = -500; }
-                } else menuTimer = Math.max(0, menuTimer - 20);
+                // 1. Color Palette Logic
+                if (palPinch && !menuOpen) {
+                    palTimer += 16; drawProgress(bioCtx, mid.x * bioCanvas.width, mid.y * bioCanvas.height, Math.min(palTimer/HOLD_DURATION, 1), "#ffffff");
+                    if (palTimer >= HOLD_DURATION) { paletteOpen = !paletteOpen; palPos = { x: mid.x * bioCanvas.width, y: mid.y * bioCanvas.height }; palTimer = -500; }
+                } else if (palTimer < 0) palTimer += 16; else palTimer = 0;
 
-                if (menuOpen) {
-                    drawFixedMenu(bioCtx);
+                if (paletteOpen) {
+                    bioCtx.fillStyle = "rgba(0,0,0,0.85)"; bioCtx.fillRect(palPos.x - 75, palPos.y - 120, 150, 45);
+                    palette.forEach((c, i) => {
+                        bioCtx.fillStyle = `#${c.toString(16).padStart(6, '0')}`;
+                        if(colorIdx === i) { bioCtx.strokeStyle = "#fff"; bioCtx.strokeRect(palPos.x-65+(i*28), palPos.y-110, 22, 22); }
+                        bioCtx.fillRect(palPos.x - 65 + (i * 28), palPos.y - 110, 22, 22);
+                    });
                     if (actionPinch) {
-                        actionTimer += 16; drawProgress(bioCtx, mx, my, Math.min(actionTimer/HOLD_DURATION, 1), "#00ff00");
-                        if (actionTimer >= HOLD_DURATION) { toolMode = (toolMode % 4) + 1; actionTimer = -500; }
+                        actionTimer += 16; drawProgress(bioCtx, mx, my, (actionTimer % HOLD_DURATION)/HOLD_DURATION, "#fff");
+                        if (actionTimer >= HOLD_DURATION) { colorIdx = (colorIdx + 1) % palette.length; actionTimer = 1; }
                     } else actionTimer = 0;
                 } else {
-                    const rotY = voxelGroup.rotation.y;
-                    const worldPos = new THREE.Vector3((0.5 - midX) * 28, (0.5 - midY) * 20, 0);
-                    const localPos = voxelGroup.worldToLocal(worldPos.clone());
+                    // 2. Menu Logic
+                    if (menuPinch) {
+                        menuTimer += 16; drawProgress(bioCtx, mx, my, Math.min(menuTimer/HOLD_DURATION, 1), "#00f0ff");
+                        if (menuTimer >= HOLD_DURATION) { menuOpen = !menuOpen; if (menuOpen) menuPos = { x: mx, y: my }; menuTimer = -500; }
+                    } else if (menuTimer < 0) menuTimer += 16; else menuTimer = 0;
 
-                    if (toolMode === 1 || toolMode === 2) {
-                        let gx = Math.round(localPos.x / gridSize), gy = Math.round(localPos.y / gridSize), gz = Math.round(localPos.z / gridSize);
-                        // Horizon Logic: build on the face currently aimed at
-                        if (Math.abs(Math.sin(rotY)) < 0.5) gz = 0; else gx = 0;
-
-                        const key = `${gx},${gy},${gz}`;
-                        ghostVoxel.visible = true;
-                        ghostVoxel.scale.set(gridSize, gridSize, gridSize);
-                        ghostVoxel.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx * gridSize, gy * gridSize, gz * gridSize)));
-                        ghostVoxel.material.color.set(toolMode === 1 ? 0x00ffcc : 0xff3333);
-
+                    if (menuOpen) {
+                        const { x, y } = menuPos;
+                        bioCtx.fillStyle = "rgba(0,0,0,0.85)"; bioCtx.fillRect(x - 130, y - 140, 260, 80);
+                        [{id:1,l:"ADD",c:"#0066ff",o:-100},{id:2,l:"PNT",c:"#ff3333",o:-40},{id:3,l:"SCL",c:"#ffff00",o:20},{id:4,l:"ROT",c:"#ff00ff",o:80}].forEach(m => {
+                            bioCtx.strokeStyle = m.c; if(toolMode === m.id) bioCtx.strokeRect(x + m.o, y - 110, 40, 40);
+                            bioCtx.fillStyle = m.c; bioCtx.fillText(m.l, x + m.o + 8, y - 85);
+                        });
                         if (actionPinch) {
-                            actionTimer += 16; drawProgress(bioCtx, mx, my, Math.min(actionTimer/HOLD_DURATION, 1), "#ffffff");
-                            if (actionTimer >= HOLD_DURATION) {
-                                if (toolMode === 1 && !placedVoxels.has(key)) {
-                                    const v = createVoxel(gx, gy, gz); voxelGroup.add(v); placedVoxels.set(key, v);
-                                } else if (toolMode === 2 && placedVoxels.has(key)) {
-                                    voxelGroup.remove(placedVoxels.get(key)); placedVoxels.delete(key);
-                                }
-                                countEl.innerText = placedVoxels.size;
-                                actionTimer = 150; 
-                            }
+                            actionTimer += 16; drawProgress(bioCtx, mx, my, (actionTimer % HOLD_DURATION)/HOLD_DURATION, "#00ff00");
+                            if (actionTimer >= HOLD_DURATION) { toolMode = (toolMode % 4) + 1; actionTimer = 1; }
                         } else actionTimer = 0;
-                    } 
-                    else if (actionPinch && (toolMode === 3 || toolMode === 4)) {
-                        if (slideStartX === null) { slideStartX = thumb.x; startVal = (toolMode === 3) ? gridSize : voxelGroup.rotation.y; }
-                        const delta = (thumb.x - slideStartX) * 8;
-                        if (toolMode === 3) {
-                            gridSize = Math.max(0.4, Math.min(4.0, startVal - delta));
-                            voxelGroup.children.forEach(c => { c.position.set(c.origPos.x * gridSize, c.origPos.y * gridSize, c.origPos.z * gridSize); c.scale.set(gridSize, gridSize, gridSize); });
-                            ghostVoxel.scale.set(gridSize, gridSize, gridSize);
-                        } else {
-                            let nr = startVal - delta;
-                            const snap = Math.round(nr / (Math.PI / 2)) * (Math.PI / 2);
-                            if (Math.abs(nr - snap) < 0.12) nr = snap;
-                            voxelGroup.rotation.y = nr;
-                        }
-                        drawProgress(bioCtx, mx, my, 1, toolMode === 3 ? "#ffff00" : "#ff00ff");
-                    } else slideStartX = null;
+                    } else {
+                        // 3. Workspace Logic
+                        const rotY = voxelGroup.rotation.y;
+                        const worldPos = new THREE.Vector3((0.5 - midX) * 28, (0.5 - midY) * 20, 0);
+                        const localPos = voxelGroup.worldToLocal(worldPos.clone());
+
+                        if (toolMode <= 2) {
+                            let gx = Math.round(localPos.x / gridSize), gy = Math.round(localPos.y / gridSize), gz = Math.round(localPos.z / gridSize);
+                            if (Math.abs(Math.sin(rotY)) < 0.5) gz = 0; else gx = 0;
+                            const key = `${gx},${gy},${gz}`;
+                            ghostVoxel.visible = true; ghostVoxel.scale.set(gridSize, gridSize, gridSize);
+                            ghostVoxel.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx * gridSize, gy * gridSize, gz * gridSize)));
+                            ghostVoxel.material.color.set(palette[colorIdx]); ghostVoxel.material.emissive.set(palette[colorIdx]);
+
+                            if (actionPinch) {
+                                actionTimer += 16; drawProgress(bioCtx, mx, my, Math.min(actionTimer/HOLD_DURATION, 1), "#ffffff");
+                                if (actionTimer >= HOLD_DURATION) {
+                                    if (toolMode === 1 && !placedVoxels.has(key)) {
+                                        const v = createVoxel(gx, gy, gz, palette[colorIdx]); voxelGroup.add(v); placedVoxels.set(key, v);
+                                    } else if (toolMode === 2 && placedVoxels.has(key)) {
+                                        const v = placedVoxels.get(key); v.material.emissive.set(palette[colorIdx]); v.children[0].material.color.set(palette[colorIdx]);
+                                    }
+                                    countEl.innerText = placedVoxels.size; actionTimer = 150; 
+                                }
+                            } else actionTimer = 0;
+                        } 
+                        else if (actionPinch) {
+                            if (slideStartX === null) { slideStartX = thumb.x; startVal = (toolMode === 3) ? gridSize : voxelGroup.rotation.y; }
+                            const delta = (thumb.x - slideStartX) * 8;
+                            if (toolMode === 3) {
+                                gridSize = Math.max(0.4, Math.min(4.0, startVal - delta));
+                                voxelGroup.children.forEach(c => { c.position.set(c.origPos.x * gridSize, c.origPos.y * gridSize, c.origPos.z * gridSize); c.scale.set(gridSize, gridSize, gridSize); });
+                            } else {
+                                let nr = startVal - delta; const snap = Math.round(nr / (Math.PI / 2)) * (Math.PI / 2);
+                                voxelGroup.rotation.y = Math.abs(nr - snap) < 0.12 ? snap : nr;
+                            }
+                        } else slideStartX = null;
+                    }
                 }
-                const names = ["", "ADD", "DELETE", "SCALE", "ROTATE"];
-                modeEl.innerText = names[toolMode];
+                modeEl.innerText = ["", "ADD", "PAINT", "SCALE", "ROTATE"][toolMode];
+                colorEl.innerText = colorNames[colorIdx]; colorEl.style.color = `#${palette[colorIdx].toString(16)}`;
             }
         }
 
-        function createVoxel(gx, gy, gz) {
+        function createVoxel(gx, gy, gz, color) {
             const geo = new THREE.BoxGeometry(0.96, 0.96, 0.96);
-            const mesh = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({ color: 0x001122, emissive: 0x00f0ff, emissiveIntensity: 0.5 }));
+            const mesh = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({ color: 0x0a0a0a, emissive: color, emissiveIntensity: 0.5 }));
             mesh.origPos = { x: gx, y: gy, z: gz };
             mesh.position.set(gx * gridSize, gy * gridSize, gz * gridSize);
             mesh.scale.set(gridSize, gridSize, gridSize);
-            mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0x00f0ff })));
+            mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: color })));
             return mesh;
         }
 
