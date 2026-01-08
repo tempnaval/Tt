@@ -1,311 +1,243 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Voxel Architect v5.2 - Gesture Update</title>
-    <style>
-        body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
-        #input_video { position: absolute; width: 100vw; height: 100vh; object-fit: cover; transform: scaleX(-1); z-index: 1; }
-        #three_canvas { position: absolute; top: 0; left: 0; z-index: 5; pointer-events: none; }
-        #biometric_canvas { position: absolute; width: 100vw; height: 100vh; z-index: 10; transform: scaleX(-1); pointer-events: none; }
-        #ui { 
-            position: absolute; top: 20px; left: 20px; z-index: 100;
-            color: #00f0ff; font-weight: bold; font-size: 14px;
-            text-shadow: 0 0 10px #00f0ff; border-left: 3px solid #00f0ff; padding-left: 15px;
-            background: rgba(0,0,0,0.6); padding: 15px;
-        }
-        .stat-val { color: #fff; }
-    </style>
+<meta charset="UTF-8">
+<title>Voxel Architect v6 - Menu Gestures</title>
+<style>
+body{margin:0;background:#000;overflow:hidden;font-family:'Courier New',monospace;}
+#input_video{position:absolute;width:100vw;height:100vh;object-fit:cover;transform:scaleX(-1);z-index:1;}
+#three_canvas{position:absolute;top:0;left:0;z-index:5;pointer-events:none;}
+#biometric_canvas{position:absolute;width:100vw;height:100vh;z-index:10;transform:scaleX(-1);pointer-events:none;}
+#ui{
+position:absolute;top:20px;left:20px;z-index:100;color:#00f0ff;font-weight:bold;font-size:14px;
+text-shadow:0 0 10px #00f0ff;border-left:3px solid #00f0ff;padding-left:15px;background:rgba(0,0,0,0.6);padding:15px;}
+.stat-val{color:#fff;}
+</style>
 </head>
 <body>
-    <div id="ui">
-        <div>BIO_SYNC: ARCHITECT_OS_v5.2</div>
-        <div>STATE: <span id="mode" class="stat-val">INITIALIZING</span></div>
-        <div>VOXELS: <span id="count" class="stat-val">0</span></div>
-        <div style="font-size: 10px; margin-top: 5px; color: #ff3333;">2 FISTS: HOLD TO RESET | 2 PALMS: HOLD TO ROTATE</div>
-        <div style="font-size: 10px; color: #ff00ff;">L-THUMB DOWN: BURST | L-THUMB UP: RESTORE</div>
-        <div style="font-size: 10px; color: #00ff00;">L-VICTORY: TOGGLE COLOR | R-VICTORY: DISCO (PALM TO STOP)</div>
-    </div>
+<div id="ui">
+<div>BIO_SYNC: ARCHITECT_OS_v6</div>
+<div>STATE: <span id="mode" class="stat-val">INITIALIZING</span></div>
+<div>VOXELS: <span id="count" class="stat-val">0</span></div>
+</div>
 
-    <video id="input_video" autoplay playsinline></video>
-    <canvas id="three_canvas"></canvas>
-    <canvas id="biometric_canvas"></canvas>
+<video id="input_video" autoplay playsinline></video>
+<canvas id="three_canvas"></canvas>
+<canvas id="biometric_canvas"></canvas>
 
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
-    <script>
-    const videoElement = document.getElementById('input_video');
-    const bioCanvas = document.getElementById('biometric_canvas');
-    const bioCtx = bioCanvas.getContext('2d');
-    const modeEl = document.getElementById('mode');
-    const countEl = document.getElementById('count');
+<script>
+// --- Basic Scene ---
+const videoElement = document.getElementById('input_video');
+const bioCanvas = document.getElementById('biometric_canvas');
+const bioCtx = bioCanvas.getContext('2d');
+const modeEl = document.getElementById('mode');
+const countEl = document.getElementById('count');
 
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 1000);
-    const renderer = new THREE.WebGLRenderer({canvas: document.getElementById('three_canvas'), antialias:true, alpha:true});
-    renderer.setSize(window.innerWidth, window.innerHeight);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45,window.innerWidth/window.innerHeight,0.1,1000);
+const renderer = new THREE.WebGLRenderer({canvas:document.getElementById('three_canvas'),antialias:true,alpha:true});
+renderer.setSize(window.innerWidth,window.innerHeight);
 
-    const voxelGroup = new THREE.Group();
-    scene.add(voxelGroup);
-    const currentSketch = new THREE.Group();
-    voxelGroup.add(currentSketch);
+const voxelGroup = new THREE.Group();
+scene.add(voxelGroup);
+const currentSketch = new THREE.Group();
+voxelGroup.add(currentSketch);
 
-    const gridSize = 1.2;
-    const placedVoxels = new Map();
+const gridSize = 1.2;
+const placedVoxels = new Map();
+const crosshair = new THREE.Mesh(
+  new THREE.BoxGeometry(gridSize,gridSize,gridSize),
+  new THREE.MeshBasicMaterial({color:0x00f0ff,wireframe:true,transparent:true,opacity:0.5})
+);
+scene.add(crosshair);
 
-    const crosshair = new THREE.Mesh(
-        new THREE.BoxGeometry(gridSize, gridSize, gridSize),
-        new THREE.MeshBasicMaterial({ color: 0x00f0ff, wireframe: true, transparent: true, opacity:0.5 })
-    );
-    scene.add(crosshair);
+scene.add(new THREE.AmbientLight(0xffffff,0.5));
+const sun = new THREE.DirectionalLight(0xffffff,1.0);
+sun.position.set(5,5,5);
+scene.add(sun);
+camera.position.z = 20;
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.0);
-    sun.position.set(5,5,5);
-    scene.add(sun);
-    camera.position.z = 20;
+let smoothedLandmarks = {Left:[], Right:[]};
+let menuOpen=false, menuOption=null; // null / '+' / '-'
+let menuTimer=0;
+const MENU_HOLD = 400;
+let crosshairActive=false;
 
-    let smoothedLandmarks = { Left: [], Right: [] };
-    let gravityEnabled = false, rainbowActive=false;
-    let gravityTimer = 0, restoreTimer=0;
-    const GRAVITY_HOLD = 700;
+const colorPalette=[0x00f0ff,0xff0000,0x0000ff,0x00ff00,0xffff00,0xff00ff,0xffa500,0x800080,0x00ff7f,0xff1493,0x7fff00,0x40e0d0,0xffd700,0xff4500,0x9370db,0x00ced1,0xf08080,0xadff2f,0xff6347,0x00bfff,0xda70d6];
+let globalColorIndex=0, leftPeaceWasActive=false;
 
-    const colorPalette = [0x00f0ff,0xff0000,0x0000ff,0x00ff00,0xffff00,0xff00ff,0xffa500,0x800080,0x00ff7f,0xff1493,0x7fff00,0x40e0d0,0xffd700,0xff4500,0x9370db,0x00ced1,0xf08080,0xadff2f,0xff6347,0x00bfff,0xda70d6];
-    let globalColorIndex=0, leftPeaceWasActive=false;
+// --- HUD and Helpers ---
+function getFloorY(){
+  const vFOV=THREE.MathUtils.degToRad(camera.fov);
+  return -(2*Math.tan(vFOV/2)*camera.position.z/2)+(gridSize/2);
+}
+function drawHUDCircle(ctx,x,y,progress,color){
+  ctx.beginPath(); ctx.arc(x,y,35,-Math.PI/2,(-Math.PI/2)+(Math.PI*2*progress)); ctx.lineWidth=5; ctx.strokeStyle=color; ctx.stroke();
+  ctx.setLineDash([3,5]);
+  ctx.beginPath(); ctx.arc(x,y,30,0,Math.PI*2); ctx.lineWidth=1; ctx.stroke();
+  ctx.setLineDash([]);
+}
+function drawCyberHand(ctx,landmarks,label){
+  if(!smoothedLandmarks[label] || smoothedLandmarks[label].length===0) smoothedLandmarks[label]=landmarks.map(p=>({...p}));
+  else landmarks.forEach((p,i)=>{
+    smoothedLandmarks[label][i].x += (p.x - smoothedLandmarks[label][i].x)*0.45;
+    smoothedLandmarks[label][i].y += (p.y - smoothedLandmarks[label][i].y)*0.45;
+    smoothedLandmarks[label][i].z += (p.z - smoothedLandmarks[label][i].z)*0.1;
+  });
+  const pts=smoothedLandmarks[label];
+  ctx.shadowBlur=10; ctx.shadowColor="#00f0ff";
+  ctx.beginPath(); ctx.strokeStyle="rgba(0,240,255,0.6)"; ctx.lineWidth=2;
+  const CONNECTIONS=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[9,10],[10,11],[11,12],[13,14],[14,15],[15,16],[0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17],[0,5]];
+  CONNECTIONS.forEach(([a,b])=>{
+    ctx.moveTo(pts[a].x*bioCanvas.width,pts[a].y*bioCanvas.height);
+    ctx.lineTo(pts[b].x*bioCanvas.width,pts[b].y*bioCanvas.height);
+  });
+  ctx.stroke();
+  pts.forEach((pt,i)=>{
+    const x=pt.x*bioCanvas.width, y=pt.y*bioCanvas.height;
+    if([4,8,12,16,20].includes(i)){ctx.strokeStyle="#00f0ff"; ctx.strokeRect(x-6,y-6,12,12);}
+    else{ctx.fillStyle="#fff"; ctx.fillRect(x-2,y-2,4,4);}
+  });
+}
 
-    function getFloorY(){
-        const vFOV = THREE.MathUtils.degToRad(camera.fov);
-        const height = 2*Math.tan(vFOV/2)*camera.position.z;
-        return -(height/2)+(gridSize/2);
+// --- Voxel Helpers ---
+function addSketchVoxel(x,y,z){
+  const key=`${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)}`;
+  if(placedVoxels.has(key)) return;
+  const mesh=new THREE.Mesh(new THREE.BoxGeometry(gridSize*0.98,gridSize*0.98,gridSize*0.98), new THREE.MeshBasicMaterial({color:colorPalette[globalColorIndex],wireframe:true}));
+  mesh.position.set(x,y,z);
+  currentSketch.add(mesh);
+}
+function commitVoxels(){
+  while(currentSketch.children.length>0){
+    const f=currentSketch.children[0];
+    const key=`${f.position.x.toFixed(1)},${f.position.y.toFixed(1)},${f.position.z.toFixed(1)}`;
+    const cube=createFinalCube(f.position.x,f.position.y,f.position.z);
+    voxelGroup.add(cube); placedVoxels.set(key,cube); currentSketch.remove(f);
+  }
+  countEl.innerText=placedVoxels.size;
+}
+function createFinalCube(x,y,z){
+  const g=new THREE.BoxGeometry(gridSize*0.95,gridSize*0.95,gridSize*0.95);
+  const m=new THREE.MeshPhongMaterial({color:0x001122,emissive:colorPalette[globalColorIndex],emissiveIntensity:0.4,transparent:true,opacity:0.8});
+  const mesh=new THREE.Mesh(g,m);
+  mesh.position.set(x,y,z); mesh.origin=new THREE.Vector3(x,y,z);
+  mesh.velocity=new THREE.Vector3(0,0,0);
+  mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(g), new THREE.LineBasicMaterial({color:colorPalette[globalColorIndex]})));
+  return mesh;
+}
+
+// --- Gesture Handling ---
+let grabTimer=0, grabOffset=new THREE.Vector3(), isGrabbing=false;
+const GRAB_HOLD=400;
+const pinchThreshold=0.05;
+
+function onResults(results){
+  bioCtx.clearRect(0,0,bioCanvas.width,bioCanvas.height);
+  crosshair.visible=false;
+
+  if(!results.multiHandLandmarks) {grabTimer=0; menuTimer=0; crosshairActive=false; return;}
+
+  let lHand=null, rHand=null;
+  results.multiHandedness.forEach((hand, idx)=>{
+    const landmarks=results.multiHandLandmarks[idx];
+    drawCyberHand(bioCtx,landmarks,hand.label);
+    if(hand.label==='Left') lHand=smoothedLandmarks['Left'];
+    if(hand.label==='Right') rHand=smoothedLandmarks['Right'];
+  });
+
+  // --- MENU ACTIVATION: Right hand pointer+middle hold + swipe down ---
+  if(rHand){
+    const indexTip=rHand[8], middleTip=rHand[12], thumbTip=rHand[4];
+    const pointerMiddleDist=getDist(indexTip,middleTip);
+
+    if(pointerMiddleDist<0.05 && indexTip.y<middleTip.y+0.02){
+      menuTimer+=16; drawHUDCircle(bioCtx,indexTip.x*bioCanvas.width,indexTip.y*bioCanvas.height,menuTimer/MENU_HOLD,"#00ffcc");
+      if(menuTimer>=MENU_HOLD && !menuOpen){
+        menuOpen=true; menuOption=null;
+        modeEl.innerText="MENU OPEN: + / -";
+      }
+    } else menuTimer=0;
+
+    // --- MENU SELECTION ---
+    if(menuOpen && !menuOption){
+      // Thumb+pointer pinch to select + or -
+      const thumbIndexDist=getDist(thumbTip,indexTip);
+      if(thumbIndexDist<0.05){
+        if(indexTip.x<0.5) menuOption='+'; else menuOption='-';
+        modeEl.innerText="MENU SELECTED: "+menuOption;
+      }
     }
 
-    function drawHUDCircle(ctx, x, y, progress, color){
-        ctx.beginPath();
-        ctx.arc(x,y,35,-Math.PI/2,(-Math.PI/2)+(Math.PI*2*progress));
-        ctx.lineWidth=5; ctx.strokeStyle=color; ctx.stroke();
-        ctx.setLineDash([3,5]);
-        ctx.beginPath(); ctx.arc(x,y,30,0,Math.PI*2); ctx.lineWidth=1; ctx.stroke();
-        ctx.setLineDash([]);
+    // --- MENU CLOSE: swipe up with same gesture ---
+    if(menuOpen && pointerMiddleDist<0.05 && indexTip.y>middleTip.y+0.05){
+      menuTimer+=16; drawHUDCircle(bioCtx,indexTip.x*bioCanvas.width,indexTip.y*bioCanvas.height,menuTimer/MENU_HOLD,"#ff5555");
+      if(menuTimer>=MENU_HOLD){ menuOpen=false; menuOption=null; menuTimer=0; modeEl.innerText="MENU CLOSED"; }
     }
+  }
 
-    function drawCyberHand(ctx, landmarks, label){
-        if(!smoothedLandmarks[label] || smoothedLandmarks[label].length===0){
-            smoothedLandmarks[label] = landmarks.map(p=>({...p}));
-        }else{
-            landmarks.forEach((p,i)=>{
-                smoothedLandmarks[label][i].x += (p.x - smoothedLandmarks[label][i].x)*0.45;
-                smoothedLandmarks[label][i].y += (p.y - smoothedLandmarks[label][i].y)*0.45;
-                smoothedLandmarks[label][i].z += (p.z - smoothedLandmarks[label][i].z)*0.1;
-            });
-        }
-        const pts = smoothedLandmarks[label];
-        ctx.shadowBlur=10; ctx.shadowColor="#00f0ff";
-        ctx.beginPath(); ctx.strokeStyle="rgba(0,240,255,0.6)"; ctx.lineWidth=2;
-        const CONNECTIONS=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[9,10],[10,11],[11,12],[13,14],[14,15],[15,16],[0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17],[0,5]];
-        CONNECTIONS.forEach(([a,b])=>{
-            ctx.moveTo(pts[a].x*bioCanvas.width, pts[a].y*bioCanvas.height);
-            ctx.lineTo(pts[b].x*bioCanvas.width, pts[b].y*bioCanvas.height);
+  // --- BUILD / DELETE AFTER SELECTION ---
+  if(menuOpen && menuOption && rHand){
+    const thumbTip=rHand[4], indexTip=rHand[8];
+    const thumbIndexDist=getDist(thumbTip,indexTip);
+    if(thumbIndexDist<0.05){
+      const worldPos=new THREE.Vector3((0.5-indexTip.x)*25,(0.5-indexTip.y)*18,0);
+      const localPos=voxelGroup.worldToLocal(worldPos.clone());
+      const gx=Math.round(localPos.x/gridSize)*gridSize;
+      const gy=Math.round(localPos.y/gridSize)*gridSize;
+      const gz=0;
+
+      crosshair.visible=true;
+      crosshair.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx,gy,gz)));
+      crosshair.material.color.set(menuOption==='+'?0x00ffcc:0xff3333);
+
+      if(menuOption==='+'){ addSketchVoxel(gx,gy,gz); commitVoxels(); }
+      if(menuOption==='-'){
+        // delete voxel under crosshair
+        placedVoxels.forEach((v,key)=>{
+          const bbox=new THREE.Box3().setFromObject(v);
+          const checkPos=voxelGroup.localToWorld(new THREE.Vector3(gx,gy,gz));
+          if(bbox.containsPoint(checkPos)){ voxelGroup.remove(v); placedVoxels.delete(key); }
         });
-        ctx.stroke();
-        pts.forEach((pt,i)=>{
-            const x=pt.x*bioCanvas.width, y=pt.y*bioCanvas.height;
-            if([4,8,12,16,20].includes(i)){ ctx.strokeStyle="#00f0ff"; ctx.strokeRect(x-6,y-6,12,12); }
-            else { ctx.fillStyle="#fff"; ctx.fillRect(x-2,y-2,4,4); }
-        });
-    }
-
-    let isGrabbing=false, grabTimer=0, grabOffset=new THREE.Vector3();
-    let isBuilding=false, buildTimer=0, isErasing=false, eraseTimer=0;
-    let resetTimer=0, rotateTimer=0, startPinchPos=null, activeAxis=null;
-    let sketchKeys=new Set();
-
-    const GRAB_HOLD=400, INTENT_HOLD=400, RESET_HOLD=900, ROTATE_HOLD=900;
-    const pinchThreshold=0.05;
-
-    function getDist(p1,p2){ return Math.sqrt(Math.pow(p1.x-p2.x,2)+Math.pow(p1.y-p2.y,2)+(p1.z&&p2.z?Math.pow(p1.z-p2.z,2):0)); }
-
-    function onResults(results){
-        bioCtx.clearRect(0,0,bioCanvas.width,bioCanvas.height);
-        crosshair.visible=false;
-
-        if(!results.multiHandLandmarks){
-            grabTimer=0; buildTimer=0; eraseTimer=0; resetTimer=0; rotateTimer=0; gravityTimer=0; restoreTimer=0;
-            return;
-        }
-
-        let lHand=null, rHand=null;
-        results.multiHandedness.forEach((hand, idx)=>{
-            const landmarks=results.multiHandLandmarks[idx];
-            drawCyberHand(bioCtx, landmarks, hand.label);
-            if(hand.label==='Left') lHand=smoothedLandmarks['Left'];
-            if(hand.label==='Right') rHand=smoothedLandmarks['Right'];
-        });
-
-        // --- LEFT HAND ---
-        if(lHand){
-            const fingersCurled=lHand[8].y>lHand[6].y && lHand[12].y>lHand[10].y && lHand[16].y>lHand[14].y && lHand[20].y>lHand[18].y;
-            const isFist=fingersCurled && getDist(lHand[4], lHand[12])<0.1;
-            const isPalm=lHand[8].y<lHand[6].y && lHand[12].y<lHand[10].y && lHand[20].y<lHand[18].y;
-            const isThumbDown=lHand[4].y>lHand[3].y && lHand[4].y>lHand[17].y && fingersCurled;
-            const isThumbUp=lHand[4].y<lHand[3].y && lHand[4].y<lHand[5].y && fingersCurled;
-            const isPointerUp=lHand[8].y<lHand[6].y;
-            const isMiddleUp=lHand[12].y<lHand[10].y;
-            const isLeftPeace=lHand[8].y<lHand[6].y && lHand[12].y<lHand[10].y && lHand[16].y>lHand[14].y && lHand[20].y>lHand[18].y;
-
-            if(isLeftPeace && !leftPeaceWasActive){ globalColorIndex=(globalColorIndex+1)%colorPalette.length; leftPeaceWasActive=true; }
-            else if(!isLeftPeace) leftPeaceWasActive=false;
-
-            // Grab
-            if(isFist && !isThumbDown && !isThumbUp){
-                if(grabTimer<GRAB_HOLD){ grabTimer+=16; drawHUDCircle(bioCtx, lHand[0].x*bioCanvas.width, lHand[0].y*bioCanvas.height, grabTimer/GRAB_HOLD,"#ffbb00"); }
-                else{
-                    const handWorldPos=new THREE.Vector3((0.5-lHand[9].x)*25,(0.5-lHand[9].y)*18,0);
-                    if(!isGrabbing){ grabOffset.copy(voxelGroup.position).sub(handWorldPos); isGrabbing=true; }
-                    voxelGroup.position.copy(handWorldPos).add(grabOffset);
-                    modeEl.innerText="BIO_LINK: GRABBED";
-                    // Zoom in/out while grabbing
-                    if(isPointerUp) voxelGroup.scale.lerp(new THREE.Vector3(0.7,0.7,0.7),0.05);
-                    else if(isMiddleUp) voxelGroup.scale.lerp(new THREE.Vector3(1.3,1.3,1.3),0.05);
-                    else voxelGroup.scale.lerp(new THREE.Vector3(1,1,1),0.05);
-                }
-            }else if(isGrabbing){
-                const handWorldPos=new THREE.Vector3((0.5-lHand[9].x)*25,(0.5-lHand[9].y)*18,0);
-                voxelGroup.position.copy(handWorldPos).add(grabOffset);
-                voxelGroup.scale.lerp(new THREE.Vector3(1,1,1),0.05);
-            }else{ grabTimer=0; }
-
-            // Thumb down/up (gravity)
-            if(isThumbDown && !isFist){
-                restoreTimer=0;
-                if(!gravityEnabled){
-                    if(gravityTimer<GRAVITY_HOLD){ gravityTimer+=16; drawHUDCircle(bioCtx,lHand[4].x*bioCanvas.width,lHand[4].y*bioCanvas.height,gravityTimer/GRAVITY_HOLD,"#ff00ff"); modeEl.innerText="BIO_LINK: INITIATING BURST..."; }
-                    else{ gravityEnabled=true; initiateGravityFall(); modeEl.innerText="BIO_LINK: GRAVITY_ACTIVE"; gravityTimer=0; }
-                }
-            }else if(isThumbUp && !isFist){
-                gravityTimer=0;
-                if(gravityEnabled){
-                    if(restoreTimer<GRAVITY_HOLD){ restoreTimer+=16; drawHUDCircle(bioCtx,lHand[4].x*bioCanvas.width,lHand[4].y*bioCanvas.height,restoreTimer/GRAVITY_HOLD,"#00ff88"); modeEl.innerText="BIO_LINK: RESTORING COORDS..."; }
-                    else{ gravityEnabled=false; modeEl.innerText="BIO_LINK: STRUCTURE_RESTORED"; restoreTimer=0; }
-                }
-            }else{ gravityTimer=0; restoreTimer=0; }
-        }
-
-        // --- RIGHT HAND ---
-        if(rHand){
-            const thumbTip=rHand[4], indexTip=rHand[8], midTip=rHand[12];
-            const pinchingNow=getDist(thumbTip,indexTip)<pinchThreshold;
-            const middlePointerTogether=getDist(indexTip, midTip)<pinchThreshold;
-            const thumbMiddlePinch=getDist(thumbTip, midTip)<pinchThreshold;
-            const palmOpen=rHand[8].y<rHand[6].y && rHand[12].y<rHand[10].y && rHand[20].y<rHand[18].y;
-
-            const px=indexTip.x*bioCanvas.width, py=indexTip.y*bioCanvas.height;
-            const worldPos=new THREE.Vector3((0.5-indexTip.x)*25,(0.5-indexTip.y)*18,0);
-            const localPos=voxelGroup.worldToLocal(worldPos.clone());
-            let gx=Math.round(localPos.x/gridSize)*gridSize, gy=Math.round(localPos.y/gridSize)*gridSize, gz=0;
-
-            // Swipe delete
-            if(middlePointerTogether && !palmOpen){
-                eraseTimer+=16; drawHUDCircle(bioCtx,px,py,eraseTimer/INTENT_HOLD,"#ff3333");
-                placedVoxels.forEach((v,key)=>{
-                    const bbox=new THREE.Box3().setFromObject(v);
-                    const checkPos=voxelGroup.localToWorld(new THREE.Vector3(gx,gy,gz));
-                    if(bbox.containsPoint(checkPos)){
-                        voxelGroup.remove(v); placedVoxels.delete(key);
-                    }
-                });
-                countEl.innerText=placedVoxels.size;
-            }else eraseTimer=0;
-
-            // Rotate / vertical adjust
-            if(thumbMiddlePinch){
-                rotateTimer+=16; drawHUDCircle(bioCtx,px,py,rotateTimer/ROTATE_HOLD,"#00ffff");
-                if(rotateTimer>=ROTATE_HOLD){
-                    const dx=(rHand[9].x - rHand[5].x)*5;
-                    const dy=(rHand[9].y - rHand[5].y)*5;
-                    voxelGroup.rotation.y+=dx*0.05;
-                    voxelGroup.position.y+=-dy*0.5;
-                    modeEl.innerText="BIO_LINK: ROTATING";
-                }
-            }else rotateTimer=0;
-
-            // Build voxels (thumb+index)
-            if(pinchingNow && !middlePointerTogether && !thumbMiddlePinch && !palmOpen){
-                if(buildTimer<INTENT_HOLD){ buildTimer+=16; drawHUDCircle(bioCtx,px,py,buildTimer/INTENT_HOLD,"#00ffcc"); modeEl.innerText="INTENT: BUILD_SYNCING..."; }
-                else{
-                    if(!isBuilding){ startPinchPos={x:gx,y:gy,z:gz}; sketchKeys.clear(); isBuilding=true; activeAxis=null; }
-                    else{
-                        const dx=Math.abs(gx-startPinchPos.x), dy=Math.abs(gy-startPinchPos.y);
-                        if(!activeAxis && (dx>0.4||dy>0.4)) activeAxis=(dx>=dy)?'x':'y';
-                        let tx=startPinchPos.x, ty=startPinchPos.y;
-                        if(activeAxis==='x') tx=gx; else if(activeAxis==='y') ty=gy;
-                        addSketchVoxel(tx,ty,gz);
-                    }
-                    modeEl.innerText="INTENT: BUILDING";
-                }
-            }else if(palmOpen){ if(isBuilding) commitVoxels(); isBuilding=false; isErasing=false; buildTimer=0; eraseTimer=0; modeEl.innerText="BIO_LINK: NAVIGATING"; }
-            else buildTimer=0;
-
-            // Crosshair
-            if(isBuilding || buildTimer>0 || isErasing || eraseTimer>0){ crosshair.visible=true; crosshair.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx,gy,gz))); crosshair.material.color.set((isErasing||eraseTimer>0)?0xff3333:colorPalette[globalColorIndex]); }
-        }
-    }
-
-    function initiateGravityFall(){ placedVoxels.forEach(v=>{ v.velocity.set((Math.random()-0.5)*0.8,0.4+Math.random()*0.5,(Math.random()-0.5)*0.8); v.isBouncing=false; }); }
-
-    function addSketchVoxel(x,y,z){ 
-        const key=`${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)}`;
-        if(sketchKeys.has(key) || placedVoxels.has(key)) return;
-        const mesh=new THREE.Mesh(new THREE.BoxGeometry(gridSize*0.98,gridSize*0.98,gridSize*0.98), new THREE.MeshBasicMaterial({color:colorPalette[globalColorIndex],wireframe:true}));
-        mesh.position.set(x,y,z); currentSketch.add(mesh); sketchKeys.add(key);
-    }
-
-    function commitVoxels(){
-        while(currentSketch.children.length>0){
-            const f=currentSketch.children[0];
-            const key=`${f.position.x.toFixed(1)},${f.position.y.toFixed(1)},${f.position.z.toFixed(1)}`;
-            const cube=createFinalCube(f.position.x,f.position.y,f.position.z);
-            voxelGroup.add(cube); placedVoxels.set(key,cube); currentSketch.remove(f);
-        }
         countEl.innerText=placedVoxels.size;
+      }
     }
+  }
 
-    function createFinalCube(x,y,z){
-        const g=new THREE.BoxGeometry(gridSize*0.95,gridSize*0.95,gridSize*0.95);
-        const m=new THREE.MeshPhongMaterial({color:0x001122,emissive:colorPalette[globalColorIndex],emissiveIntensity:0.4,transparent:true,opacity:0.8});
-        const mesh=new THREE.Mesh(g,m);
-        mesh.position.set(x,y,z);
-        mesh.origin=new THREE.Vector3(x,y,z);
-        mesh.velocity=new THREE.Vector3(0,0,0);
-        mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(g), new THREE.LineBasicMaterial({color:colorPalette[globalColorIndex]})));
-        return mesh;
-    }
+  // --- GRAB: left/right hand fist close to arm ---
+  if(lHand){
+    const wrist=lHand[0], index=lHand[8];
+    const fistClosed=index.y>wrist.y; // simple approximation
+    if(fistClosed){
+      grabTimer+=16; drawHUDCircle(bioCtx,wrist.x*bioCanvas.width,wrist.y*bioCanvas.height,grabTimer/GRAB_HOLD,"#ffbb00");
+      if(grabTimer>=GRAB_HOLD){
+        if(!isGrabbing){ grabOffset.copy(voxelGroup.position); isGrabbing=true; }
+        voxelGroup.position.lerp(grabOffset,0.1);
+        modeEl.innerText="GRABBING ALL VOXELS";
+      }
+    } else { grabTimer=0; isGrabbing=false; }
+  }
+}
 
-    const hands=new Hands({locateFile:(f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
-    hands.setOptions({maxNumHands:2,modelComplexity:1,minDetectionConfidence:0.8,minTrackingConfidence:0.8});
-    hands.onResults(onResults);
-    new Camera(videoElement,{onFrame:async()=>{ bioCanvas.width=videoElement.videoWidth; bioCanvas.height=videoElement.videoHeight; await hands.send({image:videoElement}); }, width:1280, height:720 }).start();
+// --- Animate ---
+function animate(){
+  requestAnimationFrame(animate);
+  renderer.render(scene,camera);
+}
+animate();
 
-    function animate(){
-        requestAnimationFrame(animate);
+// --- Setup Hands ---
+const hands=new Hands({locateFile:(f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+hands.setOptions({maxNumHands:2,modelComplexity:1,minDetectionConfidence:0.8,minTrackingConfidence:0.8});
+hands.onResults(onResults);
+new Camera(videoElement,{onFrame:async()=>{ bioCanvas.width=videoElement.videoWidth; bioCanvas.height=videoElement.videoHeight; await hands.send({image:videoElement}); },width:1280,height:720 }).start();
 
-        if(rainbowActive){ placedVoxels.forEach(v=>{ v.material.emissive.setHSL(Math.random(),1,0.5); v.material.emissiveIntensity=2.5; }); }
-        else{ placedVoxels.forEach(v=>{ v.material.emissive.setHex(colorPalette[globalColorIndex]); v.material.emissiveIntensity=0.4; v.children[0].material.color.setHex(colorPalette[globalColorIndex]); }); }
-
-        placedVoxels.forEach(v=>{
-            if(gravityEnabled){
-                const worldPos=new THREE.Vector3(); v.getWorldPosition(worldPos);
-                const floorY=getFloorY();
-                if(worldPos.y>floorY || v.velocity.y>0){ v.velocity.y-=0.025; v.position.add(v.velocity); }
-                else if(!v.isBouncing){ const localFloor=voxelGroup.worldToLocal(new THREE.Vector3(0,floorY,0)); v.position.y=localFloor.y; v.velocity.y*=-0.15; v.velocity.x*=0.5; v.isBouncing=true; }
-                else v.velocity.set(0,0,0);
-            }else{ v.position.lerp(v.origin,0.1); v.isBouncing=false; }
-        });
-
-        renderer.render(scene,camera);
-    }
-    animate();
-    </script>
+// --- Utils ---
+function getDist(p1,p2){return Math.sqrt(Math.pow(p1.x-p2.x,2)+Math.pow(p1.y-p2.y,2)+Math.pow((p1.z||0)-(p2.z||0),2));}
+</script>
 </body>
 </html>
