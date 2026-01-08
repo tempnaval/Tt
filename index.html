@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Voxel Architect v4.1 - Sync Update</title>
+    <title>Voxel Architect v5.1 - Sync Update</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
         #input_video { position: absolute; width: 100vw; height: 100vh; object-fit: cover; transform: scaleX(-1); z-index: 1; }
@@ -23,6 +23,8 @@
         <div>STATE: <span id="mode" class="stat-val">INITIALIZING</span></div>
         <div>VOXELS: <span id="count" class="stat-val">0</span></div>
         <div style="font-size: 10px; margin-top: 5px; color: #ff3333;">2 FISTS: HOLD TO RESET | 2 PALMS: HOLD TO ROTATE</div>
+        <div style="font-size: 10px; color: #ff00ff;">L-THUMB DOWN: BURST | L-THUMB UP: RESTORE</div>
+        <div style="font-size: 10px; color: #00ff00;">L-VICTORY: TOGGLE COLOR | R-VICTORY: DISCO (PALM TO STOP)</div>
     </div>
 
     <video id="input_video" autoplay playsinline></video>
@@ -60,12 +62,33 @@
         scene.add(crosshair);
 
         scene.add(new THREE.AmbientLight(0xffffff, 0.5));
-        const sun = new THREE.DirectionalLight(0x00f0ff, 1.0);
+        const sun = new THREE.DirectionalLight(0xffffff, 1.0);
         sun.position.set(5, 5, 5);
         scene.add(sun);
         camera.position.z = 20;
 
         let smoothedLandmarks = { Left: [], Right: [] };
+        let gravityEnabled = false;
+        let rainbowActive = false; 
+        let gravityTimer = 0;
+        let restoreTimer = 0;
+        const GRAVITY_HOLD = 800;
+
+        // --- GLOBAL COLOR PALETTE ---
+        const colorPalette = [
+            0x00f0ff, 0xff0000, 0x0000ff, 0x00ff00, 0xffff00, 0xff00ff, 
+            0xffa500, 0x800080, 0x00ff7f, 0xff1493, 0x7fff00, 0x40e0d0, 
+            0xffd700, 0xff4500, 0x9370db, 0x00ced1, 0xf08080, 0xadff2f, 
+            0xff6347, 0x00bfff, 0xda70d6
+        ];
+        let globalColorIndex = 0;
+        let leftPeaceWasActive = false;
+
+        function getFloorY() {
+            const vFOV = THREE.MathUtils.degToRad(camera.fov); 
+            const height = 2 * Math.tan(vFOV / 2) * camera.position.z;
+            return -(height / 2) + (gridSize / 2);
+        }
 
         function drawHUDCircle(ctx, x, y, progress, color) {
             ctx.beginPath();
@@ -105,11 +128,9 @@
 
         let isGrabbing = false, grabTimer = 0;
         let grabOffset = new THREE.Vector3();
-        
         let isBuilding = false, buildTimer = 0;
         let isErasing = false, eraseTimer = 0;
         let resetTimer = 0, rotateTimer = 0; 
-
         let startPinchPos = null, activeAxis = null;
         let sketchKeys = new Set();
         
@@ -117,7 +138,6 @@
         const INTENT_HOLD = 500;    
         const RESET_HOLD = 1000;    
         const ROTATE_HOLD = 1000;   
-
         const pinchThreshold = 0.05; 
 
         function getDist(p1, p2) { return Math.sqrt(Math.pow(p1.x-p2.x,2)+Math.pow(p1.y-p2.y,2)+(p1.z&&p2.z?Math.pow(p1.z-p2.z,2):0)); }
@@ -127,15 +147,12 @@
             crosshair.visible = false;
             
             if (!results.multiHandLandmarks) {
-                isGrabbing = false; isBuilding = false; isErasing = false;
                 grabTimer = 0; buildTimer = 0; eraseTimer = 0;
-                resetTimer = 0; rotateTimer = 0;
+                resetTimer = 0; rotateTimer = 0; gravityTimer = 0; restoreTimer = 0;
                 return;
             }
 
             let lHand = null, rHand = null;
-            let handsDetected = results.multiHandedness.length;
-
             results.multiHandedness.forEach((hand, idx) => {
                 const landmarks = results.multiHandLandmarks[idx];
                 drawCyberHand(bioCtx, landmarks, hand.label);
@@ -150,20 +167,18 @@
                 const rPalm = rHand[8].y < rHand[6].y && rHand[12].y < rHand[10].y && rHand[20].y < rHand[18].y;
 
                 if (lFist && rFist) {
-                    rotateTimer = 0; 
                     if (resetTimer < RESET_HOLD) {
                         resetTimer += 16;
                         drawHUDCircle(bioCtx, bioCanvas.width / 2, bioCanvas.height / 2, resetTimer/RESET_HOLD, "#ff0055");
                         modeEl.innerText = "SYSTEM: HOLD TO RESET...";
-                    } else {
+                    } else if (resetTimer >= RESET_HOLD && resetTimer < 2000) {
                         voxelGroup.position.set(0, 0, 0);
                         voxelGroup.rotation.set(0, 0, 0);
                         modeEl.innerText = "SYSTEM: HARD_RESET COMPLETE";
+                        resetTimer = 2000;
                     }
                     return; 
-                } else {
-                    resetTimer = 0; 
-                }
+                } else { resetTimer = 0; }
 
                 if (lPalm && rPalm) {
                     if (rotateTimer < ROTATE_HOLD) {
@@ -176,31 +191,76 @@
                         voxelGroup.rotation.x += (rHand[9].y - lHand[9].y) * 0.05;
                     }
                     return; 
-                } else {
-                    rotateTimer = 0; 
-                }
-            } else {
-                resetTimer = 0;
-                rotateTimer = 0;
+                } else { rotateTimer = 0; }
             }
 
-            let lPinching = false;
             if (lHand) {
-                const isFist = lHand[8].y > lHand[6].y && lHand[12].y > lHand[10].y && lHand[16].y > lHand[14].y;
-                const isPalm = lHand[8].y < lHand[6].y && lHand[12].y < lHand[10].y;
-                lPinching = getDist(lHand[4], lHand[8]) < pinchThreshold;
-                const handWorldPos = new THREE.Vector3((0.5 - lHand[9].x) * 25, (0.5 - lHand[9].y) * 18, 0);
+                const fingersCurled = lHand[8].y > lHand[6].y && lHand[12].y > lHand[10].y && lHand[16].y > lHand[14].y && lHand[20].y > lHand[18].y;
+                const isFist = fingersCurled && getDist(lHand[4], lHand[12]) < 0.1;
+                const isPalm = lHand[8].y < lHand[6].y && lHand[12].y < lHand[10].y && lHand[20].y < lHand[18].y;
+                const isThumbDown = lHand[4].y > lHand[3].y && lHand[4].y > lHand[17].y && fingersCurled;
+                const isThumbUp = lHand[4].y < lHand[3].y && lHand[4].y < lHand[5].y && fingersCurled;
 
-                if (isFist) {
+                // LEFT HAND PEACE SIGN (TOGGLE COLOR)
+                const isLeftPeace = lHand[8].y < lHand[6].y && lHand[12].y < lHand[10].y && lHand[16].y > lHand[14].y && lHand[20].y > lHand[18].y;
+                if (isLeftPeace && !leftPeaceWasActive) {
+                    globalColorIndex = (globalColorIndex + 1) % colorPalette.length;
+                    leftPeaceWasActive = true;
+                } else if (!isLeftPeace) {
+                    leftPeaceWasActive = false;
+                }
+
+                if (isPalm) {
+                    isGrabbing = false;
+                    grabTimer = 0;
+                    modeEl.innerText = "BIO_LINK: SCANNING";
+                }
+
+                if (isThumbDown && !isFist) {
+                    restoreTimer = 0;
+                    if (!gravityEnabled) {
+                        if (gravityTimer < GRAVITY_HOLD) {
+                            gravityTimer += 16;
+                            drawHUDCircle(bioCtx, lHand[4].x * bioCanvas.width, lHand[4].y * bioCanvas.height, gravityTimer/GRAVITY_HOLD, "#ff00ff");
+                            modeEl.innerText = "BIO_LINK: INITIATING BURST...";
+                        } else {
+                            gravityEnabled = true;
+                            initiateGravityFall();
+                            modeEl.innerText = "BIO_LINK: GRAVITY_ACTIVE";
+                            gravityTimer = 0;
+                        }
+                    }
+                } else if (isThumbUp && !isFist) {
+                    gravityTimer = 0;
+                    if (gravityEnabled) {
+                        if (restoreTimer < GRAVITY_HOLD) {
+                            restoreTimer += 16;
+                            drawHUDCircle(bioCtx, lHand[4].x * bioCanvas.width, lHand[4].y * bioCanvas.height, restoreTimer/GRAVITY_HOLD, "#00ff88");
+                            modeEl.innerText = "BIO_LINK: RESTORING COORDS...";
+                        } else {
+                            gravityEnabled = false;
+                            modeEl.innerText = "BIO_LINK: STRUCTURE_RESTORED";
+                            restoreTimer = 0;
+                        }
+                    }
+                } else {
+                    gravityTimer = 0; restoreTimer = 0;
+                }
+
+                if (isFist && !isThumbDown && !isThumbUp) {
                     if (grabTimer < GRAB_HOLD) {
                         grabTimer += 16;
                         drawHUDCircle(bioCtx, lHand[0].x * bioCanvas.width, lHand[0].y * bioCanvas.height, grabTimer/GRAB_HOLD, "#ffbb00");
                     } else {
+                        const handWorldPos = new THREE.Vector3((0.5 - lHand[9].x) * 25, (0.5 - lHand[9].y) * 18, 0);
                         if (!isGrabbing) { grabOffset.copy(voxelGroup.position).sub(handWorldPos); isGrabbing = true; }
                         voxelGroup.position.copy(handWorldPos).add(grabOffset);
                         modeEl.innerText = "BIO_LINK: GRABBED";
                     }
-                } else { isGrabbing = false; grabTimer = 0; if(isPalm) modeEl.innerText = "BIO_LINK: SCANNING"; }
+                } else if (isGrabbing) {
+                    const handWorldPos = new THREE.Vector3((0.5 - lHand[9].x) * 25, (0.5 - lHand[9].y) * 18, 0);
+                    voxelGroup.position.copy(handWorldPos).add(grabOffset);
+                }
             }
 
             if (rHand) {
@@ -208,11 +268,20 @@
                 const pinchingNow = getDist(thumbTip, indexTip) < pinchThreshold;
                 const pointingNow = indexTip.y < rHand[6].y && midTip.y > rHand[10].y;
                 const palmOpen = rHand[8].y < rHand[6].y && rHand[12].y < rHand[10].y && rHand[20].y < rHand[18].y;
+                
+                const isPeace = indexTip.y < rHand[6].y && midTip.y < rHand[10].y && rHand[16].y > rHand[14].y && rHand[20].y > rHand[18].y;
+                if (isPeace) rainbowActive = true;
+                else if (palmOpen) rainbowActive = false;
 
                 const px = indexTip.x * bioCanvas.width, py = indexTip.y * bioCanvas.height;
-                const worldPos = new THREE.Vector3((0.5 - indexTip.x) * 25, (0.5 - indexTip.y) * 18, -indexTip.z * 25);
+                const worldPos = new THREE.Vector3((0.5 - indexTip.x) * 25, (0.5 - indexTip.y) * 18, 0);
                 const localPos = voxelGroup.worldToLocal(worldPos.clone());
-                const gx = Math.round(localPos.x / gridSize) * gridSize, gy = Math.round(localPos.y / gridSize) * gridSize, gz = Math.round(localPos.z / gridSize) * gridSize;
+                
+                let gx = Math.round(localPos.x / gridSize) * gridSize;
+                let gy = Math.round(localPos.y / gridSize) * gridSize;
+                let gz = 0; 
+
+                const lPinching = lHand && getDist(lHand[4], lHand[8]) < pinchThreshold;
 
                 if (lPinching && pointingNow && !palmOpen) {
                     buildTimer = 0;
@@ -230,8 +299,7 @@
                         }
                         modeEl.innerText = "INTENT: ERASER_ACTIVE";
                     }
-                } 
-                else if (pinchingNow && !isGrabbing && !palmOpen) {
+                } else if (pinchingNow && !isGrabbing && !palmOpen) {
                     eraseTimer = 0;
                     if (buildTimer < INTENT_HOLD) {
                         buildTimer += 16;
@@ -240,40 +308,40 @@
                     } else {
                         if (!isBuilding) { startPinchPos = { x: gx, y: gy, z: gz }; sketchKeys.clear(); isBuilding = true; activeAxis = null; }
                         else {
-                            const dx = Math.abs(gx - startPinchPos.x), dy = Math.abs(gy - startPinchPos.y), dz = Math.abs(gz - startPinchPos.z);
-                            if (!activeAxis && (dx > 0.4 || dy > 0.4 || dz > 0.4)) {
-                                if (dx >= dy && dx >= dz) activeAxis = 'x';
-                                else if (dy >= dx && dy >= dz) activeAxis = 'y';
-                                else activeAxis = 'z';
+                            const dx = Math.abs(gx - startPinchPos.x), dy = Math.abs(gy - startPinchPos.y);
+                            if (!activeAxis && (dx > 0.4 || dy > 0.4)) {
+                                if (dx >= dy) activeAxis = 'x';
+                                else activeAxis = 'y';
                             }
-                            let tx = startPinchPos.x, ty = startPinchPos.y, tz = startPinchPos.z;
-                            if (activeAxis === 'x') tx = gx; else if (activeAxis === 'y') ty = gy; else if (activeAxis === 'z') tz = gz;
-                            addSketchVoxel(tx, ty, tz);
+                            let tx = startPinchPos.x, ty = startPinchPos.y;
+                            if (activeAxis === 'x') tx = gx; else if (activeAxis === 'y') ty = gy;
+                            addSketchVoxel(tx, ty, gz);
                         }
                         modeEl.innerText = "INTENT: BUILDING";
                     }
-                } 
-                else {
-                    if (palmOpen) {
-                        if (isBuilding) commitVoxels();
-                        isBuilding = false; isErasing = false;
-                        buildTimer = 0; eraseTimer = 0;
-                        modeEl.innerText = "BIO_LINK: NAVIGATING";
-                    }
+                } else {
+                    if (palmOpen) { if (isBuilding) commitVoxels(); isBuilding = false; isErasing = false; buildTimer = 0; eraseTimer = 0; modeEl.innerText = "BIO_LINK: NAVIGATING"; }
                 }
 
                 if (isBuilding || buildTimer > 0 || isErasing || eraseTimer > 0) {
                     crosshair.visible = true;
                     crosshair.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx, gy, gz)));
-                    crosshair.material.color.set((isErasing || eraseTimer > 0) ? 0xff3333 : 0x00f0ff);
+                    crosshair.material.color.set((isErasing || eraseTimer > 0) ? 0xff3333 : colorPalette[globalColorIndex]);
                 }
             }
+        }
+
+        function initiateGravityFall() {
+            placedVoxels.forEach((v) => {
+                v.velocity.set((Math.random() - 0.5) * 0.8, 0.4 + Math.random() * 0.5, (Math.random() - 0.5) * 0.8);
+                v.isBouncing = false;
+            });
         }
 
         function addSketchVoxel(x, y, z) {
             const key = `${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)}`;
             if (sketchKeys.has(key) || placedVoxels.has(key)) return;
-            const mesh = new THREE.Mesh(new THREE.BoxGeometry(gridSize*0.98, gridSize*0.98, gridSize*0.98), new THREE.MeshBasicMaterial({ color: 0x00f0ff, wireframe: true }));
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(gridSize*0.98, gridSize*0.98, gridSize*0.98), new THREE.MeshBasicMaterial({ color: colorPalette[globalColorIndex], wireframe: true }));
             mesh.position.set(x, y, z);
             currentSketch.add(mesh);
             sketchKeys.add(key);
@@ -293,10 +361,12 @@
 
         function createFinalCube(x, y, z) {
             const g = new THREE.BoxGeometry(gridSize*0.95, gridSize*0.95, gridSize*0.95);
-            const m = new THREE.MeshPhongMaterial({ color: 0x001122, emissive: 0x00f0ff, emissiveIntensity: 0.4, transparent: true, opacity: 0.8 });
+            const m = new THREE.MeshPhongMaterial({ color: 0x001122, emissive: colorPalette[globalColorIndex], emissiveIntensity: 0.4, transparent: true, opacity: 0.8 });
             const mesh = new THREE.Mesh(g, m);
             mesh.position.set(x, y, z);
-            mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(g), new THREE.LineBasicMaterial({ color: 0x00f0ff })));
+            mesh.origin = new THREE.Vector3(x, y, z);
+            mesh.velocity = new THREE.Vector3(0,0,0);
+            mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(g), new THREE.LineBasicMaterial({ color: colorPalette[globalColorIndex] })));
             return mesh;
         }
 
@@ -304,7 +374,45 @@
         hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
         hands.onResults(onResults);
         new Camera(videoElement, { onFrame: async () => { bioCanvas.width = videoElement.videoWidth; bioCanvas.height = videoElement.videoHeight; await hands.send({image: videoElement}); }, width: 1280, height: 720 }).start();
-        function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); }
+
+        function animate() { 
+            requestAnimationFrame(animate); 
+
+            if (rainbowActive) {
+                placedVoxels.forEach(v => {
+                    v.material.emissive.setHSL(Math.random(), 1, 0.5); 
+                    v.material.emissiveIntensity = 2.5; 
+                });
+            } else {
+                placedVoxels.forEach(v => {
+                    v.material.emissive.setHex(colorPalette[globalColorIndex]);
+                    v.material.emissiveIntensity = 0.4; 
+                    v.children[0].material.color.setHex(colorPalette[globalColorIndex]); // Edge lines
+                });
+            }
+
+            placedVoxels.forEach((v) => {
+                if (gravityEnabled) {
+                    const worldPos = new THREE.Vector3();
+                    v.getWorldPosition(worldPos);
+                    const floorY = getFloorY();
+                    if (worldPos.y > floorY || v.velocity.y > 0) {
+                        v.velocity.y -= 0.025; // Normal Responsive Gravity
+                        v.position.add(v.velocity);
+                    } else if (!v.isBouncing) {
+                        const localFloor = voxelGroup.worldToLocal(new THREE.Vector3(0, floorY, 0));
+                        v.position.y = localFloor.y;
+                        v.velocity.y *= -0.15;
+                        v.velocity.x *= 0.5;
+                        v.isBouncing = true;
+                    } else { v.velocity.set(0,0,0); }
+                } else {
+                    v.position.lerp(v.origin, 0.1);
+                    v.isBouncing = false;
+                }
+            });
+            renderer.render(scene, camera); 
+        }
         animate();
     </script>
 </body>
