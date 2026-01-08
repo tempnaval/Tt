@@ -133,8 +133,8 @@ function onResults(results){
 
     if(rHand){
         const indexTip=rHand[8], middleTip=rHand[12], thumbTip=rHand[4];
-        const twoFingers=getDist(indexTip,middleTip)<0.05; // original tight
-        const pinchDist=getDist(indexTip,thumbTip)<0.05; // original tight
+        const twoFingers=getDist(indexTip,middleTip)<0.08; // original tight
+        const pinchDist=getDist(indexTip,thumbTip)<0.08; // original tight
 
         // --- Menu Open ---
         if(!menuOpen && twoFingers){ menuHoldTimer+=16; drawHUDCircle(bioCtx,indexTip.x*bioCanvas.width,indexTip.y*bioCanvas.height,menuHoldTimer/MENU_HOLD,"#00ffcc"); }
