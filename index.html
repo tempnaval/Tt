@@ -2,21 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Voxel Architect v7 - Menu & Tools</title>
+<title>Voxel Architect v7.1 - Fixed</title>
 <style>
 body{margin:0;background:#000;overflow:hidden;font-family:'Courier New',monospace;}
 #input_video{position:absolute;width:100vw;height:100vh;object-fit:cover;transform:scaleX(-1);z-index:1;}
 #three_canvas{position:absolute;top:0;left:0;z-index:5;pointer-events:none;}
 #biometric_canvas{position:absolute;width:100vw;height:100vh;z-index:10;transform:scaleX(-1);pointer-events:none;}
-#ui{
-position:absolute;top:20px;left:20px;z-index:100;color:#00f0ff;font-weight:bold;font-size:14px;
+#ui{position:absolute;top:20px;left:20px;z-index:100;color:#00f0ff;font-weight:bold;font-size:14px;
 text-shadow:0 0 10px #00f0ff;border-left:3px solid #00f0ff;padding-left:15px;background:rgba(0,0,0,0.6);padding:15px;}
 .stat-val{color:#fff;}
 </style>
 </head>
 <body>
 <div id="ui">
-<div>BIO_SYNC: ARCHITECT_OS_v7</div>
+<div>BIO_SYNC: ARCHITECT_OS_v7.1</div>
 <div>STATE: <span id="mode" class="stat-val">INITIALIZING</span></div>
 <div>VOXELS: <span id="count" class="stat-val">0</span></div>
 </div>
@@ -103,25 +102,25 @@ function onResults(results){
 
   if(!results.multiHandLandmarks){ modeEl.innerText="NAVIGATING"; return; }
 
-  let lHand=null, rHand=null;
+  let rHand=null;
   results.multiHandedness.forEach((hand, idx)=>{
     const landmarks=results.multiHandLandmarks[idx];
     drawCyberHand(bioCtx,landmarks,hand.label);
-    if(hand.label==='Left') lHand=smoothedLandmarks['Left'];
     if(hand.label==='Right') rHand=smoothedLandmarks['Right'];
   });
 
-  // --- Menu Open / Close (two fingers) ---
   if(rHand){
-    const indexTip=rHand[8], middleTip=rHand[12];
-    const twoFingers=getDist(indexTip,middleTip)<0.05;
-    if(twoFingers){ menuHoldTimer+=16; drawHUDCircle(bioCtx,indexTip.x*bioCanvas.width,indexTip.y*bioCanvas.height,menuHoldTimer/MENU_HOLD,"#00ffcc"); }
+    const indexTip=rHand[8], middleTip=rHand[12], thumbTip=rHand[4];
+    const twoFingers=getDist(indexTip,middleTip)<0.1; // looser threshold
+
+    // --- Menu Open ---
+    if(!menuOpen && twoFingers){ menuHoldTimer+=16; drawHUDCircle(bioCtx,indexTip.x*bioCanvas.width,indexTip.y*bioCanvas.height,menuHoldTimer/MENU_HOLD,"#00ffcc"); }
     else menuHoldTimer=0;
 
-    if(menuHoldTimer>=MENU_HOLD && !menuOpen){ menuOpen=true; modeEl.innerText="MENU OPEN"; menuHoldTimer=0; }
+    if(menuHoldTimer>=MENU_HOLD && !menuOpen){ menuOpen=true; menuHoldTimer=0; modeEl.innerText="MENU OPEN"; }
 
+    // --- Menu Draw & Select ---
     if(menuOpen){
-      // Draw Menu Boxes
       const cx=bioCanvas.width/2, cy=bioCanvas.height/2, size=80;
       // Add Box
       bioCtx.fillStyle=(selectedTool==='add')?"rgba(0,255,0,0.5)":"rgba(0,0,255,0.2)";
@@ -134,41 +133,37 @@ function onResults(results){
       bioCtx.strokeStyle="#ff0000"; bioCtx.strokeRect(cx+10,cy-60,50,50);
       bioCtx.fillStyle="#ff0000"; bioCtx.fillText("-",cx+25,cy-25);
 
-      // --- Tool Selection via Pinch ---
-      if(rHand[4] && getDist(rHand[4],rHand[8])<0.05){ // thumb+pointer pinch
-        const thumbX=rHand[4].x*bioCanvas.width, thumbY=rHand[4].y*bioCanvas.height;
-        // Check which box is hovered
-        if(thumbX>=cx-60 && thumbX<=cx-10 && thumbY>=cy-60 && thumbY<=cy-10){
-          if(selectedTool==='add') selectedTool=null; else selectedTool='add'; modeEl.innerText="Selected: "+(selectedTool||"None");
-        }
-        if(thumbX>=cx+10 && thumbX<=cx+60 && thumbY>=cy-60 && thumbY<=cy-10){
-          if(selectedTool==='delete') selectedTool=null; else selectedTool='delete'; modeEl.innerText="Selected: "+(selectedTool||"None");
-        }
+      // --- Pinch Selection ---
+      if(getDist(thumbTip,indexTip)<0.1){
+        const thumbX=thumbTip.x*bioCanvas.width, thumbY=thumbTip.y*bioCanvas.height;
+        if(thumbX>=cx-60 && thumbX<=cx-10 && thumbY>=cy-60 && thumbY<=cy-10){ selectedTool=(selectedTool==='add')?null:'add'; modeEl.innerText="Selected: "+(selectedTool||"None"); }
+        if(thumbX>=cx+10 && thumbX<=cx+60 && thumbY>=cy-60 && thumbY<=cy-10){ selectedTool=(selectedTool==='delete')?null:'delete'; modeEl.innerText="Selected: "+(selectedTool||"None"); }
       }
 
-      // Close Menu with two fingers again
+      // --- Close Menu ---
       if(twoFingers){ menuHoldTimer+=16; drawHUDCircle(bioCtx,indexTip.x*bioCanvas.width,indexTip.y*bioCanvas.height,menuHoldTimer/MENU_HOLD,"#ff5555"); }
       if(menuHoldTimer>=MENU_HOLD){ menuOpen=false; menuHoldTimer=0; modeEl.innerText="MENU CLOSED"; }
     }
-  }
 
-  // --- Use Selected Tool after Menu Closed ---
-  if(!menuOpen && selectedTool && rHand && rHand[4] && rHand[8]){
-    const thumb=rHand[4], index=rHand[8];
-    const pinching=getDist(thumb,index)<0.05;
-    if(pinching){ buildHoldTimer+=16; drawHUDCircle(bioCtx,index.x*bioCanvas.width,index.y*bioCanvas.height,buildHoldTimer/BUILD_HOLD,"#00ffcc"); }
-    else buildHoldTimer=0;
+    // --- Use Selected Tool ---
+    if(!menuOpen && selectedTool && getDist(thumbTip,indexTip)<0.15){ // looser pinch
+      buildHoldTimer+=16;
+      drawHUDCircle(bioCtx,indexTip.x*bioCanvas.width,indexTip.y*bioCanvas.height,buildHoldTimer/BUILD_HOLD,"#00ffcc");
 
-    if(buildHoldTimer>=BUILD_HOLD){
-      const worldPos=new THREE.Vector3((0.5-index.x)*25,(0.5-index.y)*18,0);
+      const worldPos=new THREE.Vector3((0.5-indexTip.x)*25,(0.5-indexTip.y)*18,0);
       const localPos=voxelGroup.worldToLocal(worldPos.clone());
       const gx=Math.round(localPos.x/gridSize)*gridSize;
       const gy=Math.round(localPos.y/gridSize)*gridSize;
       const gz=0;
       crosshair.visible=true; crosshair.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx,gy,gz)));
-      if(selectedTool==='add') addVoxel(gx,gy,gz);
-      else if(selectedTool==='delete') deleteVoxel(gx,gy,gz);
-    }
+      crosshair.material.color.set(selectedTool==='add'?0x00ff00:0xff0000);
+
+      if(buildHoldTimer>=BUILD_HOLD){
+        if(selectedTool==='add') addVoxel(gx,gy,gz);
+        else if(selectedTool==='delete') deleteVoxel(gx,gy,gz);
+        buildHoldTimer=0;
+      }
+    } else buildHoldTimer=0;
   }
 }
 
