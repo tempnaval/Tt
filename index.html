@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Voxel Architect v1.9.0 - Multi-Spectral Workspace</title>
+    <title>Voxel Architect v2.0.0 - Priority Workspace</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
         #input_video { position: absolute; width: 100vw; height: 100vh; object-fit: cover; transform: scaleX(-1); z-index: 1; }
@@ -19,8 +19,8 @@
 </head>
 <body>
     <div id="ui">
-        <div>VOXEL_ARCHITECT_v1.9.0</div>
-        <div>TOOL: <span id="active_mode" class="stat-val">INITIALIZING</span></div>
+        <div>VOXEL_ARCHITECT_v2.0.0</div>
+        <div>PRIORITY: <span id="active_mode" class="stat-val">INITIALIZING</span></div>
         <div>COLOR: <span id="active_color" class="stat-val">CYAN</span></div>
         <div>VOXELS: <span id="count" class="stat-val">0</span></div>
     </div>
@@ -55,7 +55,7 @@
         let gridSize = 1.2; 
         const placedVoxels = new Map();
         
-        const ghostGeo = new THREE.BoxGeometry(1, 1, 1);
+        const ghostGeo = new THREE.BoxGeometry(0.98, 0.98, 0.98);
         const ghostMat = new THREE.MeshPhongMaterial({ color: palette[0], transparent: true, opacity: 0.5, emissive: palette[0], emissiveIntensity: 0.5 });
         const ghostVoxel = new THREE.Mesh(ghostGeo, ghostMat);
         scene.add(ghostVoxel);
@@ -70,6 +70,7 @@
         
         const HOLD_DURATION = 180;
         const TRIGGER_DIST = 0.06;
+        const PROXIMITY_LIMIT = 0.065;
 
         function getDist(p1, p2) { return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2)); }
 
@@ -79,24 +80,13 @@
             ctx.lineWidth = 6; ctx.strokeStyle = color; ctx.stroke();
         }
 
-        function drawMenus(ctx) {
-            if (menuOpen) {
-                const { x, y } = menuPos;
-                ctx.fillStyle = "rgba(0,0,0,0.8)"; ctx.fillRect(x - 130, y - 140, 260, 60);
-                ["ADD", "PAINT", "SCL", "ROT"].forEach((l, i) => {
-                    ctx.strokeStyle = (toolMode === i+1) ? "#00ff00" : "#555";
-                    ctx.strokeRect(x - 120 + (i*65), y - 130, 60, 40);
-                    ctx.fillStyle = "#fff"; ctx.fillText(l, x - 110 + (i*65), i === 1 ? y - 105 : y - 105);
-                });
-            }
-            if (paletteOpen) {
-                const { x, y } = palPos;
-                palette.forEach((c, i) => {
-                    ctx.fillStyle = `#${c.toString(16).padStart(6, '0')}`;
-                    if(colorIdx === i) ctx.strokeStyle = "#fff", ctx.lineWidth = 4, ctx.strokeRect(x-60+(i*25), y-100, 20, 20);
-                    ctx.fillRect(x - 60 + (i * 25), y - 100, 20, 20);
-                });
-            }
+        function createVoxelMesh(color) {
+            const geo = new THREE.BoxGeometry(0.96, 0.96, 0.96);
+            const mat = new THREE.MeshPhongMaterial({ color: 0x0a0a0a, emissive: color, emissiveIntensity: 0.4, shininess: 100 });
+            const mesh = new THREE.Mesh(geo, mat);
+            const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: color, linewidth: 2 }));
+            mesh.add(edges);
+            return mesh;
         }
 
         function onResults(results) {
@@ -107,79 +97,112 @@
             let rHand = results.multiHandLandmarks[results.multiHandedness.findIndex(h => h.label === 'Right')];
             if (rHand) {
                 const thumb = rHand[4], index = rHand[8], mid = rHand[12], ring = rHand[16], pinky = rHand[20];
-                const ringClosed = ring.y > rHand[14].y, pinkyClosed = pinky.y > rHand[18].y, midClosed = mid.y > rHand[10].y;
+                
+                // Proximity Check Logic
+                const isIsolated = (p1, p2, others) => {
+                    const d = getDist(p1, p2);
+                    if (d > TRIGGER_DIST) return false;
+                    return others.every(o => getDist(p1, o) > PROXIMITY_LIMIT && getDist(p2, o) > PROXIMITY_LIMIT);
+                };
 
-                const menuPinch = getDist(index, mid) < TRIGGER_DIST && ringClosed && pinkyClosed;
-                const palettePinch = getDist(thumb, mid) < TRIGGER_DIST && ringClosed && pinkyClosed;
-                const actionPinch = getDist(thumb, index) < TRIGGER_DIST && midClosed && ringClosed && pinkyClosed;
+                const menuPinch = isIsolated(index, mid, [thumb, ring, pinky]);
+                const palettePinch = isIsolated(thumb, mid, [index, ring, pinky]);
+                const actionPinch = isIsolated(thumb, index, [mid, ring, pinky]);
                 
                 const ix = index.x * bioCanvas.width, iy = index.y * bioCanvas.height;
                 const mx = mid.x * bioCanvas.width, my = mid.y * bioCanvas.height;
+                const tx = thumb.x * bioCanvas.width, ty = thumb.y * bioCanvas.height;
 
-                // Palette Toggle (Thumb + Mid)
-                if (palettePinch) {
+                // 1. Color Palette Logic (Highest Priority)
+                if (palettePinch && !menuOpen) {
                     palTimer += 16;
-                    if (palTimer < HOLD_DURATION) drawProgress(bioCtx, mx, my, palTimer/HOLD_DURATION, "#fff");
+                    if (palTimer < HOLD_DURATION) drawProgress(bioCtx, mx, my, palTimer/HOLD_DURATION, "#ffffff");
                     else { 
-                        if(!paletteOpen) { paletteOpen = true; palPos = {x: mx, y: my}; }
-                        colorIdx = (colorIdx + 1) % palette.length;
-                        ghostMat.color.set(palette[colorIdx]); ghostMat.emissive.set(palette[colorIdx]);
-                        palTimer = 1; 
+                        paletteOpen = !paletteOpen; 
+                        palPos = {x: mx, y: my}; 
+                        palTimer = -600; 
                     }
-                } else { palTimer = 0; if(!palettePinch) paletteOpen = false; }
+                } else if (palTimer < 0) palTimer += 16; else palTimer = 0;
 
-                // Main Menu Toggle (Index + Mid)
-                if (menuPinch) {
-                    menuTimer += 16;
-                    if (menuTimer < HOLD_DURATION) drawProgress(bioCtx, ix, iy, menuTimer/HOLD_DURATION, "#00f0ff");
-                    else { menuOpen = !menuOpen; menuPos = { x: ix, y: iy }; menuTimer = -600; }
-                } else if (menuTimer < 0) menuTimer += 16; else menuTimer = 0;
+                if (paletteOpen) {
+                    bioCtx.fillStyle = "rgba(0,0,0,0.8)"; bioCtx.fillRect(palPos.x - 70, palPos.y - 120, 140, 40);
+                    palette.forEach((c, i) => {
+                        bioCtx.fillStyle = `#${c.toString(16).padStart(6, '0')}`;
+                        if(colorIdx === i) { bioCtx.strokeStyle = "#fff"; bioCtx.lineWidth = 3; bioCtx.strokeRect(palPos.x-60+(i*25), palPos.y-110, 20, 20); }
+                        bioCtx.fillRect(palPos.x - 60 + (i * 25), palPos.y - 110, 20, 20);
+                    });
+                    if (actionPinch) {
+                        actionTimer += 16;
+                        drawProgress(bioCtx, tx, ty, (actionTimer % HOLD_DURATION)/HOLD_DURATION, "#fff");
+                        if (actionTimer >= HOLD_DURATION) { colorIdx = (colorIdx + 1) % palette.length; actionTimer = 1; }
+                    } else actionTimer = 0;
+                    statusEl = "COLOR SELECTION";
+                } else {
+                    // 2. Main Menu Logic
+                    if (menuPinch) {
+                        menuTimer += 16;
+                        if (menuTimer < HOLD_DURATION) drawProgress(bioCtx, ix, iy, menuTimer/HOLD_DURATION, "#00f0ff");
+                        else { menuOpen = !menuOpen; menuPos = { x: ix, y: iy }; menuTimer = -600; }
+                    } else if (menuTimer < 0) menuTimer += 16; else menuTimer = 0;
 
-                drawMenus(bioCtx);
-
-                if (!menuOpen) {
-                    const worldPos = new THREE.Vector3((0.5 - index.x) * 28, (0.5 - index.y) * 20, 0); 
-                    const localPos = voxelGroup.worldToLocal(worldPos.clone());
-                    let gx = Math.round(localPos.x / gridSize), gy = Math.round(localPos.y / gridSize);
-                    const key = `${gx},${gy},0`;
-
-                    if (toolMode <= 2) {
-                        ghostVoxel.visible = true;
-                        ghostVoxel.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx * gridSize, gy * gridSize, 0)));
-                        
+                    if (menuOpen) {
+                        bioCtx.fillStyle = "rgba(0,0,0,0.8)"; bioCtx.fillRect(menuPos.x - 130, menuPos.y - 140, 260, 60);
+                        ["ADD", "PAINT", "SCL", "ROT"].forEach((l, i) => {
+                            bioCtx.strokeStyle = (toolMode === i+1) ? "#00f0ff" : "#444";
+                            bioCtx.strokeRect(menuPos.x - 120 + (i*65), menuPos.y - 130, 60, 40);
+                            bioCtx.fillStyle = "#fff"; bioCtx.fillText(l, menuPos.x - 110 + (i*65), menuPos.y - 105);
+                        });
                         if (actionPinch) {
                             actionTimer += 16;
+                            drawProgress(bioCtx, tx, ty, (actionTimer % HOLD_DURATION)/HOLD_DURATION, "#00f0ff");
+                            if (actionTimer >= HOLD_DURATION) { toolMode = (toolMode % 4) + 1; actionTimer = 1; }
+                        } else actionTimer = 0;
+                    } else {
+                        // 3. Workspace Interaction
+                        const worldPos = new THREE.Vector3((0.5 - index.x) * 28, (0.5 - index.y) * 20, 0); 
+                        const localPos = voxelGroup.worldToLocal(worldPos.clone());
+                        let gx = Math.round(localPos.x / gridSize), gy = Math.round(localPos.y / gridSize);
+                        const key = `${gx},${gy},0`;
+
+                        ghostVoxel.visible = (toolMode <= 2);
+                        ghostVoxel.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx * gridSize, gy * gridSize, 0)));
+                        ghostVoxel.material.color.set(palette[colorIdx]);
+                        ghostVoxel.material.emissive.set(palette[colorIdx]);
+
+                        if (actionPinch) {
+                            actionTimer += 16;
+                            drawProgress(bioCtx, tx, ty, Math.min(actionTimer/HOLD_DURATION, 1), "#00ff00");
                             if (actionTimer >= HOLD_DURATION) {
                                 if (toolMode === 1 && !placedVoxels.has(key)) {
-                                    const mesh = new THREE.Mesh(ghostGeo, new THREE.MeshPhongMaterial({ color: palette[colorIdx], emissive: palette[colorIdx], emissiveIntensity: 0.4 }));
-                                    mesh.position.set(gx * gridSize, gy * gridSize, 0); mesh.scale.set(gridSize, gridSize, gridSize);
-                                    mesh.origPos = { x: gx, y: gy };
-                                    voxelGroup.add(mesh); placedVoxels.set(key, mesh);
+                                    const v = createVoxelMesh(palette[colorIdx]);
+                                    v.position.set(gx * gridSize, gy * gridSize, 0); v.scale.set(gridSize, gridSize, gridSize);
+                                    v.origPos = { x: gx, y: gy };
+                                    voxelGroup.add(v); placedVoxels.set(key, v);
                                 } else if (toolMode === 2 && placedVoxels.has(key)) {
                                     const v = placedVoxels.get(key);
-                                    v.material.color.set(palette[colorIdx]); v.material.emissive.set(palette[colorIdx]);
+                                    v.material.emissive.set(palette[colorIdx]);
+                                    v.children[0].material.color.set(palette[colorIdx]);
                                 }
                                 countEl.innerText = placedVoxels.size; actionTimer = 150;
                             }
                         } else actionTimer = 0;
-                    } else if (actionPinch) { // SCL/ROT logic
-                        if (slideStartX === null) { slideStartX = thumb.x; startVal = (toolMode === 3) ? gridSize : voxelGroup.rotation.y; }
-                        if (toolMode === 3) {
-                            gridSize = Math.max(0.4, Math.min(4.0, startVal - (thumb.x - slideStartX) * 8));
-                            voxelGroup.children.forEach(c => { c.position.set(c.origPos.x * gridSize, c.origPos.y * gridSize, 0); c.scale.set(gridSize, gridSize, gridSize); });
-                        } else {
-                            let newRot = startVal - (thumb.x - slideStartX) * 6;
-                            const snap = Math.round(newRot / (Math.PI / 2)) * (Math.PI / 2);
-                            voxelGroup.rotation.y = Math.abs(newRot - snap) < 0.15 ? snap : newRot;
-                        }
-                    } else slideStartX = null;
-                } else if (actionPinch) { // Cycle tools while menu open
-                    actionTimer += 16;
-                    if (actionTimer >= HOLD_DURATION) { toolMode = (toolMode % 4) + 1; actionTimer = 1; }
-                } else actionTimer = 0;
 
-                modeEl.innerText = ["", "ADD", "PAINT", "SCALE", "ROTATE"][toolMode];
+                        if (toolMode > 2 && actionPinch) {
+                            if (slideStartX === null) { slideStartX = thumb.x; startVal = (toolMode === 3) ? gridSize : voxelGroup.rotation.y; }
+                            if (toolMode === 3) {
+                                gridSize = Math.max(0.4, Math.min(4.0, startVal - (thumb.x - slideStartX) * 8));
+                                voxelGroup.children.forEach(c => { c.position.set(c.origPos.x * gridSize, c.origPos.y * gridSize, 0); c.scale.set(gridSize, gridSize, gridSize); });
+                            } else {
+                                let newRot = startVal - (thumb.x - slideStartX) * 6;
+                                const snap = Math.round(newRot / (Math.PI / 2)) * (Math.PI / 2);
+                                voxelGroup.rotation.y = Math.abs(newRot - snap) < 0.15 ? snap : newRot;
+                            }
+                        } else if (!actionPinch) slideStartX = null;
+                    }
+                }
+                modeEl.innerText = paletteOpen ? "PALETTE_ACTIVE" : ["", "ADD", "PAINT", "SCALE", "ROTATE"][toolMode];
                 colorEl.innerText = colorNames[colorIdx];
+                colorEl.style.color = `#${palette[colorIdx].toString(16)}`;
             }
         }
 
