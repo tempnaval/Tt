@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Voxel Architect v1.1 - Precision Sync</title>
+    <title>Voxel Architect v1.3 - Scale & Drag</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
         #input_video { position: absolute; width: 100vw; height: 100vh; object-fit: cover; transform: scaleX(-1); z-index: 1; }
@@ -19,9 +19,10 @@
 </head>
 <body>
     <div id="ui">
-        <div>VOXEL_ARCHITECT_v1.1</div>
-        <div>MODE: <span id="active_mode" class="stat-val">INITIALIZING</span></div>
+        <div>VOXEL_ARCHITECT_v1.3</div>
+        <div>MODE: <span id="active_mode" class="stat-val">SCANNING</span></div>
         <div>VOXELS: <span id="count" class="stat-val">0</span></div>
+        <div>GRID_SIZE: <span id="grid_val" class="stat-val">1.2</span></div>
     </div>
 
     <video id="input_video" autoplay playsinline></video>
@@ -38,6 +39,7 @@
         const bioCtx = bioCanvas.getContext('2d');
         const modeEl = document.getElementById('active_mode');
         const countEl = document.getElementById('count');
+        const gridEl = document.getElementById('grid_val');
 
         const scene = new THREE.Scene();
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -47,12 +49,11 @@
         const voxelGroup = new THREE.Group();
         scene.add(voxelGroup);
 
-        const gridSize = 1.2; 
+        let gridSize = 1.2; 
         const placedVoxels = new Map();
         
-        // --- GHOST VOXEL SETUP ---
-        const ghostGeo = new THREE.BoxGeometry(gridSize, gridSize, gridSize);
-        const ghostMat = new THREE.MeshBasicMaterial({ color: 0x00ffcc, wireframe: true, transparent: true, opacity: 0.3 });
+        const ghostGeo = new THREE.BoxGeometry(1, 1, 1);
+        const ghostMat = new THREE.MeshPhongMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.4, emissive: 0x00ffcc, emissiveIntensity: 0.5 });
         const ghostVoxel = new THREE.Mesh(ghostGeo, ghostMat);
         scene.add(ghostVoxel);
 
@@ -62,37 +63,47 @@
         scene.add(sun);
         camera.position.z = 22;
 
-        let toolMode = 0; // 0: None, 1: Add, 2: Delete
+        let toolMode = 0; 
         let menuOpen = false;
-        let lastMenuPinch = false;
-        let lastActionPinch = false;
+        let menuPos = { x: 0, y: 0 };
         let isGrabbing = false;
         let grabOffset = new THREE.Vector3();
-        const PINCH_THRESHOLD = 0.08;
+        let scaleStartHandX = null;
+        let scaleStartSize = null;
+        
+        let menuTimer = 0, actionTimer = 0;
+        const HOLD_DURATION = 300;
+        const PINCH_THRESHOLD = 0.065;
 
         function getDist(p1, p2) { return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2)); }
 
-        function drawUI(ctx, rHand) {
-            if (!menuOpen || !rHand) return;
-            const x = rHand[8].x * bioCanvas.width;
-            const y = rHand[8].y * bioCanvas.height;
+        function drawProgress(ctx, x, y, progress, color) {
+            ctx.beginPath();
+            ctx.arc(x, y, 25, -Math.PI/2, (-Math.PI/2) + (Math.PI * 2 * progress));
+            ctx.lineWidth = 4; ctx.strokeStyle = color; ctx.stroke();
+        }
+
+        function drawFixedMenu(ctx) {
+            if (!menuOpen) return;
+            const { x, y } = menuPos;
+            ctx.fillStyle = "rgba(0,0,0,0.8)"; ctx.fillRect(x - 100, y - 140, 200, 80);
             
-            ctx.lineWidth = 3;
-            // Delete Box
             ctx.strokeStyle = toolMode === 2 ? "#00ff00" : "#ff3333";
-            ctx.strokeRect(x - 75, y - 110, 45, 45);
-            ctx.fillStyle = "#ff3333"; ctx.font = "bold 20px Courier"; ctx.fillText("DEL", x - 70, y - 80);
+            ctx.strokeRect(x - 80, y - 110, 40, 40);
+            ctx.fillStyle = "#ff3333"; ctx.font = "12px Courier"; ctx.fillText("DEL", x - 72, y - 85);
             
-            // Add Box
             ctx.strokeStyle = toolMode === 1 ? "#00ff00" : "#0066ff";
-            ctx.strokeRect(x + 30, y - 110, 45, 45);
-            ctx.fillStyle = "#0066ff"; ctx.fillText("ADD", x + 35, y - 80);
+            ctx.strokeRect(x + 40, y - 110, 40, 40);
+            ctx.fillStyle = "#0066ff"; ctx.fillText("ADD", x + 48, y - 85);
+
+            ctx.fillStyle = "#00f0ff";
+            ctx.fillText(`SCALE: ${gridSize.toFixed(2)}`, x - 35, y - 120);
+            ctx.fillText("PINCH & MOVE X TO SCALE", x - 75, y - 130);
         }
 
         function onResults(results) {
             bioCtx.clearRect(0, 0, bioCanvas.width, bioCanvas.height);
             ghostVoxel.visible = false;
-            
             if (!results.multiHandLandmarks) return;
 
             let lHand = null, rHand = null;
@@ -102,60 +113,79 @@
                 if(hand.label === 'Right') rHand = landmarks;
             });
 
-            // MOVE GROUP (Left Hand Fist)
             if (lHand) {
                 const isFist = lHand[8].y > lHand[6].y && lHand[12].y > lHand[10].y && lHand[16].y > lHand[14].y;
                 const worldPos = new THREE.Vector3((0.5 - lHand[9].x) * 28, (0.5 - lHand[9].y) * 20, 0);
                 if (isFist) {
                     if (!isGrabbing) { grabOffset.copy(voxelGroup.position).sub(worldPos); isGrabbing = true; }
                     voxelGroup.position.copy(worldPos).add(grabOffset);
-                } else { isGrabbing = false; }
+                } else isGrabbing = false;
             }
 
-            // TOOL LOGIC (Right Hand)
             if (rHand) {
                 const thumb = rHand[4], index = rHand[8], middle = rHand[12];
                 const menuPinch = getDist(index, middle) < PINCH_THRESHOLD;
                 const actionPinch = getDist(thumb, index) < PINCH_THRESHOLD;
+                const ix = index.x * bioCanvas.width, iy = index.y * bioCanvas.height;
 
-                if (menuPinch && !lastMenuPinch) menuOpen = !menuOpen;
-                lastMenuPinch = menuPinch;
+                if (menuPinch) {
+                    menuTimer += 16;
+                    drawProgress(bioCtx, ix, iy, Math.min(menuTimer/HOLD_DURATION, 1), "#00f0ff");
+                    if (menuTimer >= HOLD_DURATION) {
+                        menuOpen = !menuOpen;
+                        if (menuOpen) menuPos = { x: ix, y: iy };
+                        menuTimer = -500;
+                    }
+                } else menuTimer = Math.max(0, menuTimer - 20);
 
                 if (menuOpen) {
-                    drawUI(bioCtx, rHand);
-                    if (actionPinch && !lastActionPinch) toolMode = (toolMode + 1) % 3;
+                    drawFixedMenu(bioCtx);
+                    if (actionPinch) {
+                        // Scaling Logic
+                        if (scaleStartHandX === null) {
+                            scaleStartHandX = thumb.x;
+                            scaleStartSize = gridSize;
+                        } else {
+                            const delta = (thumb.x - scaleStartHandX) * 15; 
+                            gridSize = Math.max(0.4, Math.min(4.0, scaleStartSize - delta));
+                            gridEl.innerText = gridSize.toFixed(2);
+                        }
+                        
+                        actionTimer += 16;
+                        if (actionTimer >= HOLD_DURATION) {
+                            toolMode = (toolMode + 1) % 3;
+                            actionTimer = -500;
+                        }
+                    } else {
+                        actionTimer = Math.max(0, actionTimer - 20);
+                        scaleStartHandX = null;
+                    }
                 } else {
-                    // Position Ghost/Crosshair between Thumb and Index
-                    const midX = (thumb.x + index.x) / 2;
-                    const midY = (thumb.y + index.y) / 2;
-                    const worldPos = new THREE.Vector3((0.5 - midX) * 28, (0.5 - midY) * 20, 0);
+                    const worldPos = new THREE.Vector3((0.5 - index.x) * 28, (0.5 - index.y) * 20, 0);
                     const localPos = voxelGroup.worldToLocal(worldPos.clone());
-                    
                     let gx = Math.round(localPos.x / gridSize) * gridSize;
                     let gy = Math.round(localPos.y / gridSize) * gridSize;
                     const key = `${gx.toFixed(1)},${gy.toFixed(1)},0.0`;
 
                     if (toolMode > 0) {
                         ghostVoxel.visible = true;
+                        ghostVoxel.scale.set(gridSize, gridSize, gridSize);
                         ghostVoxel.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx, gy, 0)));
                         ghostVoxel.material.color.set(toolMode === 1 ? 0x00ffcc : 0xff3333);
-                        ghostVoxel.material.opacity = 0.2 + Math.sin(Date.now() * 0.01) * 0.1; // Pulse effect
-
-                        if (actionPinch && !lastActionPinch) {
+                        
+                        if (actionPinch) {
+                            // Instant Action for dragging
                             if (toolMode === 1 && !placedVoxels.has(key)) {
-                                const cube = createVoxel(gx, gy, 0);
-                                voxelGroup.add(cube);
-                                placedVoxels.set(key, cube);
+                                const v = createVoxel(gx, gy, 0);
+                                voxelGroup.add(v); placedVoxels.set(key, v);
                             } else if (toolMode === 2 && placedVoxels.has(key)) {
-                                voxelGroup.remove(placedVoxels.get(key));
-                                placedVoxels.delete(key);
+                                voxelGroup.remove(placedVoxels.get(key)); placedVoxels.delete(key);
                             }
                             countEl.innerText = placedVoxels.size;
                         }
                     }
                 }
-                lastActionPinch = actionPinch;
-                modeEl.innerText = menuOpen ? "MENU_ACTIVE" : (toolMode === 1 ? "ADD_MODE" : (toolMode === 2 ? "DEL_MODE" : "NAV_MODE"));
+                modeEl.innerText = menuOpen ? "LOCKED_MENU" : (toolMode === 1 ? "DRAW" : (toolMode === 2 ? "ERASE" : "IDLE"));
             }
         }
 
@@ -172,8 +202,7 @@
         hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
         hands.onResults(onResults);
         new Camera(videoElement, { onFrame: async () => { 
-            bioCanvas.width = videoElement.videoWidth; 
-            bioCanvas.height = videoElement.videoHeight; 
+            bioCanvas.width = videoElement.videoWidth; bioCanvas.height = videoElement.videoHeight; 
             await hands.send({image: videoElement}); 
         }, width: 1280, height: 720 }).start();
 
