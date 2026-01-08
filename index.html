@@ -62,25 +62,35 @@ scene.add(sun);
 camera.position.z = 20;
 
 let smoothedLandmarks = {Left:[], Right:[]};
-let menuOpen=false, menuOption=null; // null / '+' / '-'
-let menuTimer=0;
-const MENU_HOLD = 400;
+const colorPalette=[0x00f0ff,0xff0000,0x0000ff,0x00ff00,0xffff00,0xff00ff,0xffa500,0x800080,0x00ff7f,0xff1493,0x7fff00,0x40e0d0,0xffd700,0xff4500,0x9370db,0x00ced1,0xf08080,0xadff2f,0xff6347,0x00bfff,0xda70d6];
+let globalColorIndex=0;
+
+// --- Menu Variables ---
+let menuOpen=false;
+let menuOption=null; // '+' or '-'
+let menuHoldTimer=0;
+const MENU_HOLD=400; // 400ms to open/close menu
 let crosshairActive=false;
 
-const colorPalette=[0x00f0ff,0xff0000,0x0000ff,0x00ff00,0xffff00,0xff00ff,0xffa500,0x800080,0x00ff7f,0xff1493,0x7fff00,0x40e0d0,0xffd700,0xff4500,0x9370db,0x00ced1,0xf08080,0xadff2f,0xff6347,0x00bfff,0xda70d6];
-let globalColorIndex=0, leftPeaceWasActive=false;
+// --- Grab Variables ---
+let isGrabbing=false, grabTimer=0, grabOffset=new THREE.Vector3();
+const GRAB_HOLD=400;
 
-// --- HUD and Helpers ---
-function getFloorY(){
-  const vFOV=THREE.MathUtils.degToRad(camera.fov);
-  return -(2*Math.tan(vFOV/2)*camera.position.z/2)+(gridSize/2);
-}
+// --- Utility ---
+function getDist(p1,p2){return Math.sqrt(Math.pow(p1.x-p2.x,2)+Math.pow(p1.y-p2.y,2)+Math.pow((p1.z||0)-(p2.z||0),2));}
+function getFloorY(){ const vFOV=THREE.MathUtils.degToRad(camera.fov); return -(2*Math.tan(vFOV/2)*camera.position.z/2)+(gridSize/2); }
+
+// --- HUD Circle ---
 function drawHUDCircle(ctx,x,y,progress,color){
-  ctx.beginPath(); ctx.arc(x,y,35,-Math.PI/2,(-Math.PI/2)+(Math.PI*2*progress)); ctx.lineWidth=5; ctx.strokeStyle=color; ctx.stroke();
+  ctx.beginPath(); ctx.arc(x,y,35,-Math.PI/2,(-Math.PI/2)+(Math.PI*2*progress));
+  ctx.lineWidth=5; ctx.strokeStyle=color; ctx.stroke();
   ctx.setLineDash([3,5]);
-  ctx.beginPath(); ctx.arc(x,y,30,0,Math.PI*2); ctx.lineWidth=1; ctx.stroke();
+  ctx.beginPath(); ctx.arc(x,y,30,0,Math.PI*2);
+  ctx.lineWidth=1; ctx.stroke();
   ctx.setLineDash([]);
 }
+
+// --- Draw Hand ---
 function drawCyberHand(ctx,landmarks,label){
   if(!smoothedLandmarks[label] || smoothedLandmarks[label].length===0) smoothedLandmarks[label]=landmarks.map(p=>({...p}));
   else landmarks.forEach((p,i)=>{
@@ -131,16 +141,12 @@ function createFinalCube(x,y,z){
   return mesh;
 }
 
-// --- Gesture Handling ---
-let grabTimer=0, grabOffset=new THREE.Vector3(), isGrabbing=false;
-const GRAB_HOLD=400;
-const pinchThreshold=0.05;
-
+// --- Main Gesture Handling ---
 function onResults(results){
   bioCtx.clearRect(0,0,bioCanvas.width,bioCanvas.height);
   crosshair.visible=false;
 
-  if(!results.multiHandLandmarks) {grabTimer=0; menuTimer=0; crosshairActive=false; return;}
+  if(!results.multiHandLandmarks){ grabTimer=0; menuHoldTimer=0; crosshairActive=false; return; }
 
   let lHand=null, rHand=null;
   results.multiHandedness.forEach((hand, idx)=>{
@@ -150,94 +156,95 @@ function onResults(results){
     if(hand.label==='Right') rHand=smoothedLandmarks['Right'];
   });
 
-  // --- MENU ACTIVATION: Right hand pointer+middle hold + swipe down ---
+  // --- MENU GESTURE ---
   if(rHand){
     const indexTip=rHand[8], middleTip=rHand[12], thumbTip=rHand[4];
     const pointerMiddleDist=getDist(indexTip,middleTip);
 
     if(pointerMiddleDist<0.05 && indexTip.y<middleTip.y+0.02){
-      menuTimer+=16; drawHUDCircle(bioCtx,indexTip.x*bioCanvas.width,indexTip.y*bioCanvas.height,menuTimer/MENU_HOLD,"#00ffcc");
-      if(menuTimer>=MENU_HOLD && !menuOpen){
-        menuOpen=true; menuOption=null;
-        modeEl.innerText="MENU OPEN: + / -";
-      }
-    } else menuTimer=0;
+      menuHoldTimer+=16;
+      drawHUDCircle(bioCtx,indexTip.x*bioCanvas.width,indexTip.y*bioCanvas.height,menuHoldTimer/MENU_HOLD,"#00ffcc");
+      if(menuHoldTimer>=MENU_HOLD && !menuOpen){ menuOpen=true; menuOption=null; modeEl.innerText="MENU OPEN: + / -"; }
+    } else { menuHoldTimer=0; }
 
-    // --- MENU SELECTION ---
+    // --- Menu UI ---
+    if(menuOpen){
+      const centerX=bioCanvas.width*0.5, centerY=bioCanvas.height*0.5, size=80;
+      // background
+      bioCtx.fillStyle="rgba(0,0,0,0.5)"; bioCtx.fillRect(centerX-size,centerY-size,size*2,size*2);
+      // + box
+      bioCtx.fillStyle=(menuOption==='+')?"#00ffcc":"#004466";
+      bioCtx.fillRect(centerX-size+10,centerY-size+10,size-20,size-20);
+      bioCtx.strokeStyle="#00ffcc"; bioCtx.lineWidth=2;
+      bioCtx.strokeRect(centerX-size+10,centerY-size+10,size-20,size-20);
+      bioCtx.fillStyle="#00ffcc"; bioCtx.font="30px monospace"; bioCtx.fillText("+",centerX-8,centerY-8);
+      // - box
+      bioCtx.fillStyle=(menuOption==='-')?"#ff3333":"#660000";
+      bioCtx.fillRect(centerX-size+10,centerY+10,size-20,size-20);
+      bioCtx.strokeStyle="#ff3333"; bioCtx.strokeRect(centerX-size+10,centerY+10,size-20,size-20);
+      bioCtx.fillStyle="#ff3333"; bioCtx.fillText("-",centerX-8,centerY+38);
+    }
+
+    // --- Menu Selection ---
     if(menuOpen && !menuOption){
-      // Thumb+pointer pinch to select + or -
       const thumbIndexDist=getDist(thumbTip,indexTip);
       if(thumbIndexDist<0.05){
-        if(indexTip.x<0.5) menuOption='+'; else menuOption='-';
+        if(indexTip.y<centerY){ menuOption='+'; } else { menuOption='-'; }
         modeEl.innerText="MENU SELECTED: "+menuOption;
       }
     }
 
-    // --- MENU CLOSE: swipe up with same gesture ---
+    // --- Menu Close ---
     if(menuOpen && pointerMiddleDist<0.05 && indexTip.y>middleTip.y+0.05){
-      menuTimer+=16; drawHUDCircle(bioCtx,indexTip.x*bioCanvas.width,indexTip.y*bioCanvas.height,menuTimer/MENU_HOLD,"#ff5555");
-      if(menuTimer>=MENU_HOLD){ menuOpen=false; menuOption=null; menuTimer=0; modeEl.innerText="MENU CLOSED"; }
+      menuHoldTimer+=16; drawHUDCircle(bioCtx,indexTip.x*bioCanvas.width,indexTip.y*bioCanvas.height,menuHoldTimer/MENU_HOLD,"#ff5555");
+      if(menuHoldTimer>=MENU_HOLD){ menuOpen=false; menuOption=null; menuHoldTimer=0; modeEl.innerText="MENU CLOSED"; }
     }
-  }
 
-  // --- BUILD / DELETE AFTER SELECTION ---
-  if(menuOpen && menuOption && rHand){
-    const thumbTip=rHand[4], indexTip=rHand[8];
-    const thumbIndexDist=getDist(thumbTip,indexTip);
-    if(thumbIndexDist<0.05){
-      const worldPos=new THREE.Vector3((0.5-indexTip.x)*25,(0.5-indexTip.y)*18,0);
-      const localPos=voxelGroup.worldToLocal(worldPos.clone());
-      const gx=Math.round(localPos.x/gridSize)*gridSize;
-      const gy=Math.round(localPos.y/gridSize)*gridSize;
-      const gz=0;
-
-      crosshair.visible=true;
-      crosshair.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx,gy,gz)));
-      crosshair.material.color.set(menuOption==='+'?0x00ffcc:0xff3333);
-
-      if(menuOption==='+'){ addSketchVoxel(gx,gy,gz); commitVoxels(); }
-      if(menuOption==='-'){
-        // delete voxel under crosshair
-        placedVoxels.forEach((v,key)=>{
-          const bbox=new THREE.Box3().setFromObject(v);
-          const checkPos=voxelGroup.localToWorld(new THREE.Vector3(gx,gy,gz));
-          if(bbox.containsPoint(checkPos)){ voxelGroup.remove(v); placedVoxels.delete(key); }
-        });
-        countEl.innerText=placedVoxels.size;
+    // --- Build/Delete ---
+    if(menuOpen && menuOption){
+      const thumbIndexDist=getDist(thumbTip,indexTip);
+      if(thumbIndexDist<0.05){
+        const worldPos=new THREE.Vector3((0.5-indexTip.x)*25,(0.5-indexTip.y)*18,0);
+        const localPos=voxelGroup.worldToLocal(worldPos.clone());
+        const gx=Math.round(localPos.x/gridSize)*gridSize;
+        const gy=Math.round(localPos.y/gridSize)*gridSize;
+        const gz=0;
+        crosshair.visible=true;
+        crosshair.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx,gy,gz)));
+        crosshair.material.color.set(menuOption==='+'?0x00ffcc:0xff3333);
+        if(menuOption==='+'){ addSketchVoxel(gx,gy,gz); commitVoxels(); }
+        if(menuOption==='-'){
+          placedVoxels.forEach((v,key)=>{
+            const bbox=new THREE.Box3().setFromObject(v);
+            const checkPos=voxelGroup.localToWorld(new THREE.Vector3(gx,gy,gz));
+            if(bbox.containsPoint(checkPos)){ voxelGroup.remove(v); placedVoxels.delete(key); }
+          });
+          countEl.innerText=placedVoxels.size;
+        }
       }
     }
   }
 
-  // --- GRAB: left/right hand fist close to arm ---
+  // --- Grab ---
   if(lHand){
     const wrist=lHand[0], index=lHand[8];
-    const fistClosed=index.y>wrist.y; // simple approximation
+    const fistClosed=index.y>wrist.y; // simple fist approximation
     if(fistClosed){
       grabTimer+=16; drawHUDCircle(bioCtx,wrist.x*bioCanvas.width,wrist.y*bioCanvas.height,grabTimer/GRAB_HOLD,"#ffbb00");
-      if(grabTimer>=GRAB_HOLD){
-        if(!isGrabbing){ grabOffset.copy(voxelGroup.position); isGrabbing=true; }
-        voxelGroup.position.lerp(grabOffset,0.1);
-        modeEl.innerText="GRABBING ALL VOXELS";
-      }
+      if(grabTimer>=GRAB_HOLD){ isGrabbing=true; voxelGroup.position.lerp(grabOffset,0.1); modeEl.innerText="GRABBING ALL VOXELS"; }
     } else { grabTimer=0; isGrabbing=false; }
   }
 }
 
 // --- Animate ---
-function animate(){
-  requestAnimationFrame(animate);
-  renderer.render(scene,camera);
-}
+function animate(){ requestAnimationFrame(animate); renderer.render(scene,camera); }
 animate();
 
-// --- Setup Hands ---
+// --- Hands Setup ---
 const hands=new Hands({locateFile:(f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
 hands.setOptions({maxNumHands:2,modelComplexity:1,minDetectionConfidence:0.8,minTrackingConfidence:0.8});
 hands.onResults(onResults);
 new Camera(videoElement,{onFrame:async()=>{ bioCanvas.width=videoElement.videoWidth; bioCanvas.height=videoElement.videoHeight; await hands.send({image:videoElement}); },width:1280,height:720 }).start();
-
-// --- Utils ---
-function getDist(p1,p2){return Math.sqrt(Math.pow(p1.x-p2.x,2)+Math.pow(p1.y-p2.y,2)+Math.pow((p1.z||0)-(p2.z||0),2));}
 </script>
 </body>
 </html>
