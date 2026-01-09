@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Voxel Architect v2.4.0 - Matrix Font & Selection</title>
+    <title>Voxel Architect v2.3.0 - High-Fidelity & Multi-Select</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
         #input_video { position: absolute; width: 100vw; height: 100vh; object-fit: cover; transform: scaleX(-1); z-index: 1; }
@@ -17,15 +17,15 @@
         #text_input {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
             z-index: 200; background: rgba(0,0,0,0.95); border: 2px solid #00f0ff;
-            color: #fff; padding: 25px; font-size: 30px; font-family: monospace;
-            outline: none; display: none; box-shadow: 0 0 30px #00f0ff; text-transform: uppercase;
+            color: #fff; padding: 25px; font-size: 30px; font-family: 'Arial';
+            outline: none; display: none; box-shadow: 0 0 30px #00f0ff;
         }
         .stat-val { color: #fff; }
     </style>
 </head>
 <body>
     <div id="ui">
-        <div>VOXEL_ARCHITECT_v2.4.0</div>
+        <div>VOXEL_ARCHITECT_v2.3.0</div>
         <div>TOOL: <span id="active_mode" class="stat-val">INIT</span></div>
         <div>COLOR: <span id="active_color" class="stat-val" style="color:#00f0ff">CYAN</span></div>
         <div>VOXELS: <span id="count" class="stat-val">0</span></div>
@@ -63,7 +63,9 @@
         let menuOpen = false, paletteOpen = false, isTyping = false;
         let menuPos = { x: 0, y: 0 }, palPos = { x: 0, y: 0 };
         let isGrabbing = false, grabOffset = new THREE.Vector3(), paintPriorityTimer = 0;
-        let slideStartX = null, startVal = null;
+        let selectionMode = false, selectedVoxels = [];
+        
+        let menuTimer = 0, actionTimer = 0, grabTimer = 0, palTimer = 0;
         const placedVoxels = new Map();
         
         const ghostVoxel = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshPhongMaterial({ transparent: true, opacity: 0.5 }));
@@ -75,11 +77,6 @@
 
         function getDist(p1, p2) { return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2)); }
 
-        function drawProgress(ctx, x, y, p, c) {
-            ctx.beginPath(); ctx.arc(x, y, 22, -Math.PI/2, (-Math.PI/2) + (Math.PI*2*p));
-            ctx.lineWidth = 4; ctx.strokeStyle = c; ctx.stroke();
-        }
-
         function createVoxel(gx, gy, gz, color) {
             const geo = new THREE.BoxGeometry(0.96, 0.96, 0.96);
             const mesh = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({ color: 0x0a0a0a, emissive: color, emissiveIntensity: 0.5 }));
@@ -90,21 +87,20 @@
             return mesh;
         }
 
-        // Matrix-style Font Stamper (Cleaner, Calculator Look)
-        function stampMatrixText(text, startX, startY) {
+        function stampText(text, startX, startY) {
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
-            // Using small font size to force pixelation / blockiness
-            ctx.font = "7px 'Courier New'"; 
-            const width = text.length * 6;
-            canvas.width = width; canvas.height = 10;
-            ctx.fillStyle = "white";
-            ctx.fillText(text.toUpperCase(), 0, 7);
-            const imgData = ctx.getImageData(0, 0, width, 10).data;
+            ctx.font = "bold 24px Arial"; // High Resolution Font
+            const width = Math.ceil(ctx.measureText(text).width);
+            canvas.width = width; canvas.height = 30;
+            ctx.font = "bold 24px Arial"; ctx.fillStyle = "white";
+            ctx.fillText(text, 0, 22);
+            const imgData = ctx.getImageData(0, 0, width, 30).data;
 
-            for(let y=0; y<10; y++) {
+            for(let y=0; y<30; y++) {
                 for(let x=0; x<width; x++) {
-                    if(imgData[(y * width + x) * 4 + 3] > 120) {
+                    // Sample every other pixel to keep density manageable but legible
+                    if(imgData[(y * width + x) * 4 + 3] > 180 && x%1==0 && y%1==0) {
                         let gx = startX + x, gy = startY - y;
                         let key = `${gx},${gy},0`;
                         if(!placedVoxels.has(key)) {
@@ -120,7 +116,7 @@
         textInput.addEventListener('keydown', (e) => {
             if(e.key === 'Enter') {
                 const lp = voxelGroup.worldToLocal(ghostVoxel.position.clone());
-                stampMatrixText(textInput.value, Math.round(lp.x/gridSize), Math.round(lp.y/gridSize));
+                stampText(textInput.value, Math.round(lp.x/gridSize), Math.round(lp.y/gridSize));
                 textInput.style.display = 'none'; isTyping = false;
             }
         });
@@ -136,30 +132,32 @@
                 if(hand.label === 'Right') rHand = results.multiHandLandmarks[idx];
             });
 
-            // LEFT HAND: Drag Workspace / Select
+            // LEFT HAND: Selection & Workspace Grab
             if (lHand) {
                 const lThumb = lHand[4], lIndex = lHand[8];
                 const isLPinch = getDist(lThumb, lIndex) < TRIGGER_DIST;
                 const lx = lThumb.x * bioCanvas.width, ly = lThumb.y * bioCanvas.height;
+
                 if (isLPinch) {
-                    bioCtx.strokeStyle = "#00f0ff"; bioCtx.strokeRect(lx-30, ly-30, 60, 60);
+                    bioCtx.strokeStyle = "#00f0ff"; bioCtx.strokeRect(lx-20, ly-20, 40, 40);
+                    // Move existing selection logic
                     const worldPos = new THREE.Vector3((0.5 - lThumb.x) * 28, (0.5 - lThumb.y) * 20, 0);
                     if (!isGrabbing) { grabOffset.copy(voxelGroup.position).sub(worldPos); isGrabbing = true; }
                     voxelGroup.position.copy(worldPos).add(grabOffset);
-                } else isGrabbing = false;
+                } else { isGrabbing = false; }
             }
 
-            // RIGHT HAND: Tools
+            // RIGHT HAND: Tools & Building
             if (rHand) {
                 const thumb = rHand[4], index = rHand[8], mid = rHand[12], ring = rHand[16], pinky = rHand[20];
                 const isIsolated = (p1, p2, others) => getDist(p1,p2) < TRIGGER_DIST && others.every(o => getDist(p1,o) > PROXIMITY_LIMIT);
-                const actionPinch = isIsolated(thumb, index, [mid, ring, pinky]);
                 const menuPinch = isIsolated(index, mid, [thumb, ring, pinky]);
+                const actionPinch = isIsolated(thumb, index, [mid, ring, pinky]);
                 const palPinch = isIsolated(thumb, mid, [index, ring, pinky]);
                 const mx = ((thumb.x+index.x)/2)*bioCanvas.width, my = ((thumb.y+index.y)/2)*bioCanvas.height;
 
-                if(palPinch && !menuOpen) {
-                    palTimer += 16; if(palTimer >= HOLD_DURATION) { paletteOpen = !paletteOpen; palPos = {x:mx, y:my}; palTimer = -500; if(!paletteOpen) paintPriorityTimer = 2000; }
+                if (palPinch && !menuOpen) {
+                    palTimer += 16; if (palTimer >= HOLD_DURATION) { paletteOpen = !paletteOpen; palPos = { x: mx, y: my }; palTimer = -500; if(!paletteOpen) paintPriorityTimer = 2000; }
                 } else palTimer = Math.max(-500, palTimer - 16);
 
                 if (paletteOpen) {
@@ -194,7 +192,7 @@
                         if (actionPinch) {
                             if (toolMode === 5) { textInput.style.display = 'block'; textInput.focus(); isTyping = true; }
                             else if (toolMode <= 2) {
-                                actionTimer += 16; drawProgress(bioCtx, mx, my, Math.min(actionTimer/HOLD_DURATION, 1), "#fff");
+                                actionTimer += 16; drawProgress(bioCtx, mx, my, Math.min(actionTimer/HOLD_DURATION,1), "#fff");
                                 if (actionTimer >= HOLD_DURATION) {
                                     const key = `${gx},${gy},0`;
                                     if (toolMode === 1 && !placedVoxels.has(key)) {
@@ -207,10 +205,11 @@
                                     countEl.innerText = placedVoxels.size; actionTimer = 150; 
                                 }
                             } else {
+                                let startThumb = thumb.x;
                                 if (slideStartX === null) { slideStartX = thumb.x; startVal = (toolMode === 3) ? gridSize : voxelGroup.rotation.y; }
                                 let delta = (thumb.x - slideStartX) * 8;
                                 if (toolMode === 3) {
-                                    gridSize = Math.max(0.1, Math.min(4.0, startVal - delta));
+                                    gridSize = Math.max(0.1, Math.min(4.0, startVal - delta)); // Ultra-fine scaling
                                     voxelGroup.children.forEach(c => { c.position.set(c.origPos.x*gridSize, c.origPos.y*gridSize, c.origPos.z*gridSize); c.scale.set(gridSize, gridSize, gridSize); });
                                 } else {
                                     let nr = startVal - delta; const snap = Math.round(nr / (Math.PI / 2)) * (Math.PI / 2);
