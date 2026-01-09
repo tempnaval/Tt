@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Voxel Architect v2.2.0 - Text Spectral Sync</title>
+    <title>Voxel Architect v2.3.0 - Multi-Axis</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
         #input_video { position: absolute; width: 100vw; height: 100vh; object-fit: cover; transform: scaleX(-1); z-index: 1; }
@@ -25,7 +25,7 @@
 </head>
 <body>
     <div id="ui">
-        <div>VOXEL_ARCHITECT_v2.2.0</div>
+        <div>VOXEL_ARCHITECT_v2.3.0</div>
         <div>TOOL: <span id="active_mode" class="stat-val">INIT</span></div>
         <div>COLOR: <span id="active_color" class="stat-val" style="color:#00f0ff">CYAN</span></div>
         <div>VOXELS: <span id="count" class="stat-val">0</span></div>
@@ -99,7 +99,7 @@
             return mesh;
         }
 
-        function stampText(text, startX, startY) {
+        function stampText(text, startX, startY, startZ) {
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
             ctx.font = "bold 10px monospace";
@@ -113,9 +113,9 @@
                 for(let x=0; x<width; x++) {
                     if(imgData[(y * width + x) * 4 + 3] > 128) {
                         let gx = startX + x, gy = startY - y;
-                        let key = `${gx},${gy},0`;
+                        let key = `${gx},${gy},${startZ}`;
                         if(!placedVoxels.has(key)) {
-                            const v = createVoxel(gx, gy, 0, palette[colorIdx]);
+                            const v = createVoxel(gx, gy, startZ, palette[colorIdx]);
                             voxelGroup.add(v); placedVoxels.set(key, v);
                         }
                     }
@@ -128,7 +128,10 @@
             if(e.key === 'Enter') {
                 const worldPos = ghostVoxel.position.clone();
                 const localPos = voxelGroup.worldToLocal(worldPos);
-                stampText(textInput.value, Math.round(localPos.x/gridSize), Math.round(localPos.y/gridSize));
+                stampText(textInput.value, 
+                    Math.round(localPos.x/gridSize), 
+                    Math.round(localPos.y/gridSize),
+                    Math.round(localPos.z/gridSize));
                 textInput.style.display = 'none'; textInput.value = ''; isTyping = false;
             }
         });
@@ -209,19 +212,20 @@
                             if (actionTimer >= HOLD_DURATION) { toolMode = (toolMode % 5) + 1; actionTimer = 1; }
                         } else actionTimer = 0;
                     } else {
-                        const rotY = voxelGroup.rotation.y;
                         const worldPos = new THREE.Vector3((0.5 - midX) * 28, (0.5 - midY) * 20, 0);
                         const localPos = voxelGroup.worldToLocal(worldPos.clone());
                         if (paintPriorityTimer > 0) paintPriorityTimer -= 16;
 
                         if (toolMode === 1 || toolMode === 2 || toolMode === 5) {
-                            let gx = Math.round(localPos.x / gridSize), gy = Math.round(localPos.y / gridSize);
-                            ghostVoxel.visible = true;
-                            ghostVoxel.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx * gridSize, gy * gridSize, 0)));
-                            ghostVoxel.material.color.set(palette[colorIdx]); ghostVoxel.material.emissive.set(palette[colorIdx]);
+                            // Coordinate calculation for multi-axis support
+                            let gx = Math.round(localPos.x / gridSize);
+                            let gy = Math.round(localPos.y / gridSize);
+                            let gz = Math.round(localPos.z / gridSize);
                             
-                            // Visual update: ensure placement ghost matches current grid scale
+                            ghostVoxel.visible = true;
+                            ghostVoxel.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx * gridSize, gy * gridSize, gz * gridSize)));
                             ghostVoxel.scale.set(gridSize, gridSize, gridSize);
+                            ghostVoxel.material.color.set(palette[colorIdx]); ghostVoxel.material.emissive.set(palette[colorIdx]);
 
                             if (actionPinch) {
                                 if (toolMode === 5) { 
@@ -229,9 +233,9 @@
                                 } else {
                                     actionTimer += 16; drawProgress(bioCtx, mx, my, Math.min(actionTimer/HOLD_DURATION, 1), "#ffffff");
                                     if (actionTimer >= HOLD_DURATION) {
-                                        const key = `${gx},${gy},0`;
+                                        const key = `${gx},${gy},${gz}`;
                                         if (toolMode === 1 && !placedVoxels.has(key)) {
-                                            const v = createVoxel(gx, gy, 0, palette[colorIdx]); voxelGroup.add(v); placedVoxels.set(key, v);
+                                            const v = createVoxel(gx, gy, gz, palette[colorIdx]); voxelGroup.add(v); placedVoxels.set(key, v);
                                         } else if (toolMode === 2 && placedVoxels.has(key)) {
                                             if (paintPriorityTimer > 0) {
                                                 const v = placedVoxels.get(key);
@@ -246,19 +250,18 @@
                         else if (actionPinch) {
                             if (slideStartX === null) { slideStartX = thumb.x; startVal = (toolMode === 3) ? gridSize : voxelGroup.rotation.y; }
                             
-                            // Adjusted sensitivity to 12 to make the wider scale range easier to traverse
-                            const delta = (thumb.x - slideStartX) * 12;
+                            // Returned scale speed to original (8)
+                            const delta = (thumb.x - slideStartX) * 8;
                             
                             if (toolMode === 3) {
-                                // MODIFICATION: Min scale is now 0.05 (much smaller), Max remains 4.0
                                 gridSize = Math.max(0.05, Math.min(4.0, startVal - delta));
-                                
                                 voxelGroup.children.forEach(c => { 
                                     c.position.set(c.origPos.x * gridSize, c.origPos.y * gridSize, c.origPos.z * gridSize); 
                                     c.scale.set(gridSize, gridSize, gridSize); 
                                 });
                             } else {
-                                let nr = startVal - delta; const snap = Math.round(nr / (Math.PI / 2)) * (Math.PI / 2);
+                                let nr = startVal - delta; 
+                                const snap = Math.round(nr / (Math.PI / 2)) * (Math.PI / 2);
                                 voxelGroup.rotation.y = Math.abs(nr - snap) < 0.20 ? snap : nr;
                             }
                         } else slideStartX = null;
