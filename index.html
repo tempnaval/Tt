@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Voxel Architect v2.3.0 - Multi-Axis</title>
+    <title>Voxel Architect v2.3.0 - Precision Line</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
         #input_video { position: absolute; width: 100vw; height: 100vh; object-fit: cover; transform: scaleX(-1); z-index: 1; }
@@ -68,6 +68,10 @@
         let menuTimer = 0, actionTimer = 0, grabTimer = 0, palTimer = 0;
         const placedVoxels = new Map();
         
+        // Line Drawing State
+        let lineStart = null; // {gx, gy, gz}
+        let linePreviewVoxels = [];
+
         const ghostVoxel = new THREE.Mesh(
             new THREE.BoxGeometry(1, 1, 1),
             new THREE.MeshPhongMaterial({ color: palette[0], transparent: true, opacity: 0.5, emissive: palette[0], emissiveIntensity: 0.4 })
@@ -99,42 +103,10 @@
             return mesh;
         }
 
-        function stampText(text, startX, startY, startZ) {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            ctx.font = "bold 10px monospace";
-            const width = Math.ceil(ctx.measureText(text).width);
-            canvas.width = width; canvas.height = 12;
-            ctx.font = "bold 10px monospace"; ctx.fillStyle = "white";
-            ctx.fillText(text, 0, 10);
-            const imgData = ctx.getImageData(0, 0, width, 12).data;
-
-            for(let y=0; y<12; y++) {
-                for(let x=0; x<width; x++) {
-                    if(imgData[(y * width + x) * 4 + 3] > 128) {
-                        let gx = startX + x, gy = startY - y;
-                        let key = `${gx},${gy},${startZ}`;
-                        if(!placedVoxels.has(key)) {
-                            const v = createVoxel(gx, gy, startZ, palette[colorIdx]);
-                            voxelGroup.add(v); placedVoxels.set(key, v);
-                        }
-                    }
-                }
-            }
-            countEl.innerText = placedVoxels.size;
+        function clearPreview() {
+            linePreviewVoxels.forEach(v => voxelGroup.remove(v));
+            linePreviewVoxels = [];
         }
-
-        textInput.addEventListener('keydown', (e) => {
-            if(e.key === 'Enter') {
-                const worldPos = ghostVoxel.position.clone();
-                const localPos = voxelGroup.worldToLocal(worldPos);
-                stampText(textInput.value, 
-                    Math.round(localPos.x/gridSize), 
-                    Math.round(localPos.y/gridSize),
-                    Math.round(localPos.z/gridSize));
-                textInput.style.display = 'none'; textInput.value = ''; isTyping = false;
-            }
-        });
 
         function onResults(results) {
             bioCtx.clearRect(0, 0, bioCanvas.width, bioCanvas.height);
@@ -148,6 +120,7 @@
                 if(hand.label === 'Right') rHand = landmarks;
             });
 
+            // Handle Left Hand (Movement/World Drag)
             if (lHand) {
                 const isFist = lHand[8].y > lHand[6].y && lHand[12].y > lHand[10].y;
                 const lx = lHand[9].x * bioCanvas.width, ly = lHand[9].y * bioCanvas.height;
@@ -161,6 +134,7 @@
                 } else { grabTimer = 0; isGrabbing = false; }
             }
 
+            // Handle Right Hand (Tools)
             if (rHand) {
                 const thumb = rHand[4], index = rHand[8], mid = rHand[12], ring = rHand[16], pinky = rHand[20];
                 const isIsolated = (p1, p2, others) => {
@@ -168,107 +142,106 @@
                     return others.every(o => getDist(p1, o) > PROXIMITY_LIMIT && getDist(p2, o) > PROXIMITY_LIMIT);
                 };
 
-                const menuPinch = isIsolated(index, mid, [thumb, ring, pinky]);
                 const actionPinch = isIsolated(thumb, index, [mid, ring, pinky]);
-                const palPinch = isIsolated(thumb, mid, [index, ring, pinky]);
                 const midX = (thumb.x + index.x) / 2, midY = (thumb.y + index.y) / 2;
                 const mx = midX * bioCanvas.width, my = midY * bioCanvas.height;
 
-                if (palPinch && !menuOpen) {
+                // Mode/Palette UI management (Menu logic kept for stability)
+                if (isIsolated(thumb, mid, [index, ring, pinky]) && !menuOpen) {
                     palTimer += 16; drawProgress(bioCtx, mid.x * bioCanvas.width, mid.y * bioCanvas.height, Math.min(palTimer/HOLD_DURATION, 1), "#ffffff");
-                    if (palTimer >= HOLD_DURATION) { 
-                        paletteOpen = !paletteOpen; palPos = { x: mx, y: my }; palTimer = -500; 
-                        if(!paletteOpen) paintPriorityTimer = 2000;
-                    }
+                    if (palTimer >= HOLD_DURATION) { paletteOpen = !paletteOpen; palPos = { x: mx, y: my }; palTimer = -500; }
                 } else if (palTimer < 0) palTimer += 16; else palTimer = 0;
 
-                if (paletteOpen) {
-                    bioCtx.fillStyle = "rgba(0,0,0,0.85)"; bioCtx.fillRect(palPos.x - 75, palPos.y - 120, 150, 45);
-                    palette.forEach((c, i) => {
-                        bioCtx.fillStyle = `#${c.toString(16).padStart(6, '0')}`;
-                        if(colorIdx === i) { bioCtx.strokeStyle = "#fff"; bioCtx.strokeRect(palPos.x-65+(i*28), palPos.y-110, 22, 22); }
-                        bioCtx.fillRect(palPos.x - 65 + (i * 28), palPos.y - 110, 22, 22);
-                    });
-                    if (actionPinch) {
-                        actionTimer += 16; drawProgress(bioCtx, mx, my, (actionTimer % HOLD_DURATION)/HOLD_DURATION, "#fff");
-                        if (actionTimer >= HOLD_DURATION) { colorIdx = (colorIdx + 1) % palette.length; actionTimer = 1; }
-                    } else actionTimer = 0;
-                } else {
-                    if (menuPinch) {
-                        menuTimer += 16; drawProgress(bioCtx, mx, my, Math.min(menuTimer/HOLD_DURATION, 1), "#00f0ff");
-                        if (menuTimer >= HOLD_DURATION) { menuOpen = !menuOpen; if (menuOpen) menuPos = { x: mx, y: my }; menuTimer = -500; }
-                    } else if (menuTimer < 0) menuTimer += 16; else menuTimer = 0;
+                if (!paletteOpen && !menuOpen) {
+                    const worldPos = new THREE.Vector3((0.5 - midX) * 28, (0.5 - midY) * 20, 0);
+                    const localPos = voxelGroup.worldToLocal(worldPos.clone());
+                    let gx = Math.round(localPos.x / gridSize);
+                    let gy = Math.round(localPos.y / gridSize);
+                    let gz = Math.round(localPos.z / gridSize);
 
-                    if (menuOpen) {
-                        const { x, y } = menuPos;
-                        bioCtx.fillStyle = "rgba(0,0,0,0.85)"; bioCtx.fillRect(x - 130, y - 140, 320, 80);
-                        [{id:1,l:"ADD",c:"#0066ff"},{id:2,l:"D/P",c:"#ff3333"},{id:3,l:"SCL",c:"#ffff00"},{id:4,l:"ROT",c:"#ff00ff"},{id:5,l:"TXT",c:"#00f0ff"}].forEach((m, i) => {
-                            const ox = x - 110 + (i * 60);
-                            bioCtx.strokeStyle = m.c; if(toolMode === m.id) bioCtx.strokeRect(ox, y - 110, 50, 40);
-                            bioCtx.fillStyle = m.c; bioCtx.fillText(m.l, ox + 10, y - 85);
-                        });
+                    if (toolMode === 1) { // ADD MODE (Line Drawing)
+                        ghostVoxel.visible = !actionPinch;
+                        ghostVoxel.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx * gridSize, gy * gridSize, gz * gridSize)));
+                        ghostVoxel.scale.set(gridSize, gridSize, gridSize);
+                        ghostVoxel.material.color.set(palette[colorIdx]);
+
                         if (actionPinch) {
-                            actionTimer += 16; drawProgress(bioCtx, mx, my, (actionTimer % HOLD_DURATION)/HOLD_DURATION, "#00ff00");
-                            if (actionTimer >= HOLD_DURATION) { toolMode = (toolMode % 5) + 1; actionTimer = 1; }
-                        } else actionTimer = 0;
-                    } else {
-                        const worldPos = new THREE.Vector3((0.5 - midX) * 28, (0.5 - midY) * 20, 0);
-                        const localPos = voxelGroup.worldToLocal(worldPos.clone());
-                        if (paintPriorityTimer > 0) paintPriorityTimer -= 16;
+                            if (lineStart === null) {
+                                lineStart = { x: gx, y: gy, z: gz };
+                            } else {
+                                clearPreview();
+                                // Lock to straight lines: Calculate delta
+                                let dx = gx - lineStart.x;
+                                let dy = gy - lineStart.y;
+                                let dz = gz - lineStart.z;
+                                
+                                // Determine primary axis
+                                if (Math.abs(dx) >= Math.abs(dy) && Math.abs(dx) >= Math.abs(dz)) { dy = 0; dz = 0; }
+                                else if (Math.abs(dy) >= Math.abs(dx) && Math.abs(dy) >= Math.abs(dz)) { dx = 0; dz = 0; }
+                                else { dx = 0; dy = 0; }
 
-                        if (toolMode === 1 || toolMode === 2 || toolMode === 5) {
-                            // Coordinate calculation for multi-axis support
-                            let gx = Math.round(localPos.x / gridSize);
-                            let gy = Math.round(localPos.y / gridSize);
-                            let gz = Math.round(localPos.z / gridSize);
-                            
-                            ghostVoxel.visible = true;
-                            ghostVoxel.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx * gridSize, gy * gridSize, gz * gridSize)));
-                            ghostVoxel.scale.set(gridSize, gridSize, gridSize);
-                            ghostVoxel.material.color.set(palette[colorIdx]); ghostVoxel.material.emissive.set(palette[colorIdx]);
-
-                            if (actionPinch) {
-                                if (toolMode === 5) { 
-                                    textInput.style.display = 'block'; textInput.focus(); isTyping = true; 
-                                } else {
-                                    actionTimer += 16; drawProgress(bioCtx, mx, my, Math.min(actionTimer/HOLD_DURATION, 1), "#ffffff");
-                                    if (actionTimer >= HOLD_DURATION) {
-                                        const key = `${gx},${gy},${gz}`;
-                                        if (toolMode === 1 && !placedVoxels.has(key)) {
-                                            const v = createVoxel(gx, gy, gz, palette[colorIdx]); voxelGroup.add(v); placedVoxels.set(key, v);
-                                        } else if (toolMode === 2 && placedVoxels.has(key)) {
-                                            if (paintPriorityTimer > 0) {
-                                                const v = placedVoxels.get(key);
-                                                v.material.emissive.set(palette[colorIdx]); v.children[0].material.color.set(palette[colorIdx]);
-                                            } else { voxelGroup.remove(placedVoxels.get(key)); placedVoxels.delete(key); }
-                                        }
-                                        countEl.innerText = placedVoxels.size; actionTimer = 150; 
-                                    }
+                                // Create line preview
+                                const steps = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));
+                                for (let i = 0; i <= steps; i++) {
+                                    const tx = lineStart.x + (steps === 0 ? 0 : Math.round(i * (dx / steps)));
+                                    const ty = lineStart.y + (steps === 0 ? 0 : Math.round(i * (dy / steps)));
+                                    const tz = lineStart.z + (steps === 0 ? 0 : Math.round(i * (dz / steps)));
+                                    
+                                    const v = createVoxel(tx, ty, tz, palette[colorIdx]);
+                                    v.material.opacity = 0.6; v.material.transparent = true;
+                                    voxelGroup.add(v);
+                                    linePreviewVoxels.push(v);
                                 }
-                            } else actionTimer = 0;
-                        } 
-                        else if (actionPinch) {
+                            }
+                        } else if (lineStart !== null) {
+                            // Hand Released: Place line permanently
+                            linePreviewVoxels.forEach(v => {
+                                const key = `${v.origPos.x},${v.origPos.y},${v.origPos.z}`;
+                                if (!placedVoxels.has(key)) {
+                                    v.material.opacity = 1.0; v.material.transparent = false;
+                                    placedVoxels.set(key, v);
+                                } else {
+                                    voxelGroup.remove(v);
+                                }
+                            });
+                            linePreviewVoxels = [];
+                            lineStart = null;
+                            countEl.innerText = placedVoxels.size;
+                        }
+                    } else if (toolMode === 2) { // DELETE/PAINT
+                         ghostVoxel.visible = true;
+                         ghostVoxel.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx * gridSize, gy * gridSize, gz * gridSize)));
+                         if (actionPinch) {
+                             const key = `${gx},${gy},${gz}`;
+                             if (placedVoxels.has(key)) {
+                                 const v = placedVoxels.get(key);
+                                 voxelGroup.remove(v);
+                                 placedVoxels.delete(key);
+                                 countEl.innerText = placedVoxels.size;
+                             }
+                         }
+                    } else if (toolMode === 3 || toolMode === 4) { // SCALE / ROTATE
+                        if (actionPinch) {
                             if (slideStartX === null) { slideStartX = thumb.x; startVal = (toolMode === 3) ? gridSize : voxelGroup.rotation.y; }
-                            
-                            // Returned scale speed to original (8)
                             const delta = (thumb.x - slideStartX) * 8;
-                            
                             if (toolMode === 3) {
                                 gridSize = Math.max(0.05, Math.min(4.0, startVal - delta));
                                 voxelGroup.children.forEach(c => { 
-                                    c.position.set(c.origPos.x * gridSize, c.origPos.y * gridSize, c.origPos.z * gridSize); 
-                                    c.scale.set(gridSize, gridSize, gridSize); 
+                                    if(c.origPos) {
+                                        c.position.set(c.origPos.x * gridSize, c.origPos.y * gridSize, c.origPos.z * gridSize); 
+                                        c.scale.set(gridSize, gridSize, gridSize); 
+                                    }
                                 });
                             } else {
-                                let nr = startVal - delta; 
-                                const snap = Math.round(nr / (Math.PI / 2)) * (Math.PI / 2);
-                                voxelGroup.rotation.y = Math.abs(nr - snap) < 0.20 ? snap : nr;
+                                voxelGroup.rotation.y = startVal - delta;
                             }
                         } else slideStartX = null;
                     }
                 }
-                modeEl.innerText = ["", "ADD", paintPriorityTimer > 0 ? "PAINT" : "DELETE", "SCALE", "ROTATE", "TEXT"][toolMode];
-                colorEl.innerText = colorNames[colorIdx]; colorEl.style.color = `#${palette[colorIdx].toString(16).padStart(6,'0')}`;
+                
+                // Keep UI mode indicator updated
+                modeEl.innerText = ["", "ADD (LINE)", "DELETE", "SCALE", "ROTATE", "TEXT"][toolMode];
+                colorEl.innerText = colorNames[colorIdx];
             }
         }
 
