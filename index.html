@@ -219,6 +219,9 @@
                             ghostVoxel.visible = true;
                             ghostVoxel.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx * gridSize, gy * gridSize, 0)));
                             ghostVoxel.material.color.set(palette[colorIdx]); ghostVoxel.material.emissive.set(palette[colorIdx]);
+                            
+                            // Visual update: ensure placement ghost matches current grid scale
+                            ghostVoxel.scale.set(gridSize, gridSize, gridSize);
 
                             if (actionPinch) {
                                 if (toolMode === 5) { 
@@ -242,10 +245,18 @@
                         } 
                         else if (actionPinch) {
                             if (slideStartX === null) { slideStartX = thumb.x; startVal = (toolMode === 3) ? gridSize : voxelGroup.rotation.y; }
-                            const delta = (thumb.x - slideStartX) * 8;
+                            
+                            // Adjusted sensitivity to 12 to make the wider scale range easier to traverse
+                            const delta = (thumb.x - slideStartX) * 12;
+                            
                             if (toolMode === 3) {
-                                gridSize = Math.max(0.4, Math.min(4.0, startVal - delta));
-                                voxelGroup.children.forEach(c => { c.position.set(c.origPos.x * gridSize, c.origPos.y * gridSize, c.origPos.z * gridSize); c.scale.set(gridSize, gridSize, gridSize); });
+                                // MODIFICATION: Min scale is now 0.05 (much smaller), Max remains 4.0
+                                gridSize = Math.max(0.05, Math.min(4.0, startVal - delta));
+                                
+                                voxelGroup.children.forEach(c => { 
+                                    c.position.set(c.origPos.x * gridSize, c.origPos.y * gridSize, c.origPos.z * gridSize); 
+                                    c.scale.set(gridSize, gridSize, gridSize); 
+                                });
                             } else {
                                 let nr = startVal - delta; const snap = Math.round(nr / (Math.PI / 2)) * (Math.PI / 2);
                                 voxelGroup.rotation.y = Math.abs(nr - snap) < 0.20 ? snap : nr;
