@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Voxel Architect v2.3.0 - Core Edition</title>
+    <title>Voxel Architect v5.2 - Multi-Axis Sync</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
         #input_video { position: absolute; width: 100vw; height: 100vh; object-fit: cover; transform: scaleX(-1); z-index: 1; }
@@ -14,23 +14,16 @@
             text-shadow: 0 0 10px #00f0ff; border-left: 3px solid #00f0ff; padding-left: 15px;
             background: rgba(0,0,0,0.6); padding: 15px;
         }
-        #text_input {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            z-index: 200; background: rgba(0,0,0,0.9); border: 2px solid #00f0ff;
-            color: #00f0ff; padding: 20px; font-size: 24px; font-family: 'Courier New';
-            outline: none; display: none; box-shadow: 0 0 20px #00f0ff;
-        }
         .stat-val { color: #fff; }
     </style>
 </head>
 <body>
     <div id="ui">
-        <div>VOXEL_ARCHITECT_v2.3.0</div>
+        <div>BIO_SYNC: ARCHITECT_OS_v5.2</div>
         <div>TOOL: <span id="active_mode" class="stat-val">INIT</span></div>
-        <div>COLOR: <span id="active_color" class="stat-val" style="color:#00f0ff">CYAN</span></div>
+        <div>COLOR: <span id="active_color" class="stat-val">CYAN</span></div>
         <div>VOXELS: <span id="count" class="stat-val">0</span></div>
     </div>
-    <input type="text" id="text_input" placeholder="TYPE WORD + ENTER">
 
     <video id="input_video" autoplay playsinline></video>
     <canvas id="three_canvas"></canvas>
@@ -44,11 +37,11 @@
         const videoElement = document.getElementById('input_video');
         const bioCanvas = document.getElementById('biometric_canvas');
         const bioCtx = bioCanvas.getContext('2d');
-        const textInput = document.getElementById('text_input');
         const modeEl = document.getElementById('active_mode');
         const colorEl = document.getElementById('active_color');
         const countEl = document.getElementById('count');
 
+        // --- THREE.JS SCENE SETUP ---
         const scene = new THREE.Scene();
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('three_canvas'), antialias: true, alpha: true });
@@ -57,65 +50,65 @@
         const voxelGroup = new THREE.Group();
         scene.add(voxelGroup);
 
-        const palette = [0x00f0ff, 0xff3366, 0x00ff66, 0xffcc00, 0xff00ff];
+        const colorPalette = [0x00f0ff, 0xff3366, 0x00ff66, 0xffcc00, 0xff00ff];
         const colorNames = ["CYAN", "ROSE", "NEON", "GOLD", "VOID"];
         let colorIdx = 0, gridSize = 1.2, toolMode = 1;
-        let menuOpen = false, paletteOpen = false, isTyping = false;
+
+        // UI State
+        let menuOpen = false, paletteOpen = false;
         let menuPos = { x: 0, y: 0 }, palPos = { x: 0, y: 0 };
         let isGrabbing = false, grabOffset = new THREE.Vector3();
-        let slideStartX = null, startVal = null, paintPriorityTimer = 0;
-        
-        // Drawing logic state
-        let isPinching = false;
-        let startGridPos = null;
-
         let menuTimer = 0, actionTimer = 0, grabTimer = 0, palTimer = 0;
+        let slideStartX = null, startVal = null;
+
+        const HOLD_DURATION = 150; 
+        const TRIGGER_DIST = 0.072;
+        const PROXIMITY_LIMIT = 0.065;
         const placedVoxels = new Map();
-        
+
+        // Ghost Voxel (Crosshair)
         const ghostVoxel = new THREE.Mesh(
-            new THREE.BoxGeometry(1, 1, 1),
-            new THREE.MeshPhongMaterial({ color: palette[0], transparent: true, opacity: 0.4, emissive: palette[0], emissiveIntensity: 0.5, shininess: 100 })
+            new THREE.BoxGeometry(gridSize, gridSize, gridSize),
+            new THREE.MeshBasicMaterial({ color: colorPalette[0], wireframe: true, transparent: true, opacity: 0.5 })
         );
         scene.add(ghostVoxel);
 
-        scene.add(new THREE.AmbientLight(0xffffff, 0.8));
-        const sun = new THREE.DirectionalLight(0xffffff, 0.6);
-        sun.position.set(5, 10, 5);
+        scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+        const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+        sun.position.set(5, 5, 5);
         scene.add(sun);
         camera.position.z = 25;
 
-        const HOLD_DURATION = 100, TRIGGER_DIST = 0.072, PROXIMITY_LIMIT = 0.058;
-
+        // --- UTILS ---
         function getDist(p1, p2) { return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2)); }
-
+        
         function drawProgress(ctx, x, y, progress, color) {
             ctx.beginPath(); ctx.arc(x, y, 25, -Math.PI/2, (-Math.PI/2) + (Math.PI * 2 * progress));
             ctx.lineWidth = 5; ctx.strokeStyle = color; ctx.stroke();
         }
 
-        function createVoxel(gx, gy, gz, color) {
-            const geo = new THREE.BoxGeometry(0.98, 0.98, 0.98);
-            // 3D Transparent look like original
-            const mat = new THREE.MeshPhongMaterial({ 
-                color: color, 
-                transparent: true, 
-                opacity: 0.6, 
+        function createFinalCube(gx, gy, gz, color) {
+            const g = new THREE.BoxGeometry(gridSize*0.95, gridSize*0.95, gridSize*0.95);
+            const m = new THREE.MeshPhongMaterial({ 
+                color: 0x001122, 
                 emissive: color, 
-                emissiveIntensity: 0.3,
-                shininess: 90
+                emissiveIntensity: 0.4, 
+                transparent: true, 
+                opacity: 0.8 
             });
-            const mesh = new THREE.Mesh(geo, mat);
-            mesh.origPos = { x: gx, y: gy, z: gz };
+            const mesh = new THREE.Mesh(g, m);
             mesh.position.set(gx * gridSize, gy * gridSize, gz * gridSize);
-            mesh.scale.set(gridSize, gridSize, gridSize);
-            mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: color, transparent: true, opacity: 0.8 })));
+            mesh.origPos = { x: gx, y: gy, z: gz };
+            mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(g), new THREE.LineBasicMaterial({ color: color })));
             return mesh;
         }
 
+        // --- MEDIAPIPE LOGIC ---
         function onResults(results) {
             bioCtx.clearRect(0, 0, bioCanvas.width, bioCanvas.height);
             ghostVoxel.visible = false;
-            if (!results.multiHandLandmarks || isTyping) return;
+            
+            if (!results.multiHandLandmarks) return;
 
             let lHand = null, rHand = null;
             results.multiHandedness.forEach((hand, idx) => {
@@ -124,6 +117,7 @@
                 if(hand.label === 'Right') rHand = landmarks;
             });
 
+            // LEFT HAND: NAVIGATION (GRAB)
             if (lHand) {
                 const isFist = lHand[8].y > lHand[6].y && lHand[12].y > lHand[10].y;
                 const lx = lHand[9].x * bioCanvas.width, ly = lHand[9].y * bioCanvas.height;
@@ -137,6 +131,7 @@
                 } else { grabTimer = 0; isGrabbing = false; }
             }
 
+            // RIGHT HAND: TOOLS & BUILDING
             if (rHand) {
                 const thumb = rHand[4], index = rHand[8], mid = rHand[12], ring = rHand[16], pinky = rHand[20];
                 const isIsolated = (p1, p2, others) => {
@@ -144,120 +139,118 @@
                     return others.every(o => getDist(p1, o) > PROXIMITY_LIMIT && getDist(p2, o) > PROXIMITY_LIMIT);
                 };
 
-                const menuPinch = isIsolated(index, mid, [thumb, ring, pinky]);
-                const actionPinch = isIsolated(thumb, index, [mid, ring, pinky]);
-                const palPinch = isIsolated(thumb, mid, [index, ring, pinky]);
+                const menuPinch = isIsolated(index, mid, [thumb, ring, pinky]);   // Index + Mid
+                const actionPinch = isIsolated(thumb, index, [mid, ring, pinky]); // Thumb + Index
+                const palPinch = isIsolated(thumb, mid, [index, ring, pinky]);   // Thumb + Mid
+                
                 const midX = (thumb.x + index.x) / 2, midY = (thumb.y + index.y) / 2;
                 const mx = midX * bioCanvas.width, my = midY * bioCanvas.height;
 
+                // 1. PALETTE TOGGLE
+                if (palPinch && !menuOpen) {
+                    palTimer += 16; drawProgress(bioCtx, mid.x * bioCanvas.width, mid.y * bioCanvas.height, Math.min(palTimer/HOLD_DURATION, 1), "#ffffff");
+                    if (palTimer >= HOLD_DURATION) { 
+                        paletteOpen = !paletteOpen; palPos = { x: mx, y: my }; palTimer = -500; 
+                    }
+                } else if (palTimer < 0) palTimer += 16; else palTimer = 0;
+
                 if (paletteOpen) {
                     bioCtx.fillStyle = "rgba(0,0,0,0.85)"; bioCtx.fillRect(palPos.x - 75, palPos.y - 120, 150, 45);
-                    palette.forEach((c, i) => {
+                    colorPalette.forEach((c, i) => {
                         bioCtx.fillStyle = `#${c.toString(16).padStart(6, '0')}`;
                         if(colorIdx === i) { bioCtx.strokeStyle = "#fff"; bioCtx.strokeRect(palPos.x-65+(i*28), palPos.y-110, 22, 22); }
                         bioCtx.fillRect(palPos.x - 65 + (i * 28), palPos.y - 110, 22, 22);
                     });
                     if (actionPinch) {
                         actionTimer += 16; drawProgress(bioCtx, mx, my, (actionTimer % HOLD_DURATION)/HOLD_DURATION, "#fff");
-                        if (actionTimer >= HOLD_DURATION) { colorIdx = (colorIdx + 1) % palette.length; actionTimer = 1; }
+                        if (actionTimer >= HOLD_DURATION) { colorIdx = (colorIdx + 1) % colorPalette.length; actionTimer = 1; }
                     } else actionTimer = 0;
-                } else if (menuOpen) {
-                    const { x, y } = menuPos;
-                    bioCtx.fillStyle = "rgba(0,0,0,0.85)"; bioCtx.fillRect(x - 130, y - 140, 320, 80);
-                    [{id:1,l:"ADD",c:"#0066ff"},{id:2,l:"D/P",c:"#ff3333"},{id:3,l:"SCL",c:"#ffff00"},{id:4,l:"ROT",c:"#ff00ff"},{id:5,l:"TXT",c:"#00f0ff"}].forEach((m, i) => {
-                        const ox = x - 110 + (i * 60);
-                        bioCtx.strokeStyle = m.c; if(toolMode === m.id) bioCtx.strokeRect(ox, y - 110, 50, 40);
-                        bioCtx.fillStyle = m.c; bioCtx.fillText(m.l, ox + 10, y - 85);
-                    });
-                    if (actionPinch) {
-                        actionTimer += 16; drawProgress(bioCtx, mx, my, (actionTimer % HOLD_DURATION)/HOLD_DURATION, "#00ff00");
-                        if (actionTimer >= HOLD_DURATION) { toolMode = (toolMode % 5) + 1; actionTimer = 1; }
-                    } else actionTimer = 0;
-                } else {
-                    const worldPos = new THREE.Vector3((0.5 - midX) * 28, (0.5 - midY) * 20, 0);
-                    const localPos = voxelGroup.worldToLocal(worldPos.clone());
-                    
-                    if (toolMode === 1 || toolMode === 2 || toolMode === 5) {
-                        let gx = Math.round(localPos.x / gridSize);
-                        let gy = Math.round(localPos.y / gridSize);
-                        let gz = Math.round(localPos.z / gridSize);
+                } 
+                // 2. TOOL MENU TOGGLE
+                else {
+                    if (menuPinch) {
+                        menuTimer += 16; drawProgress(bioCtx, mx, my, Math.min(menuTimer/HOLD_DURATION, 1), "#00f0ff");
+                        if (menuTimer >= HOLD_DURATION) { menuOpen = !menuOpen; if (menuOpen) menuPos = { x: mx, y: my }; menuTimer = -500; }
+                    } else if (menuTimer < 0) menuTimer += 16; else menuTimer = 0;
 
-                        // STRAIGHT LINE LOGIC
+                    if (menuOpen) {
+                        const { x, y } = menuPos;
+                        bioCtx.fillStyle = "rgba(0,0,0,0.85)"; bioCtx.fillRect(x - 110, y - 140, 240, 80);
+                        [{id:1,l:"ADD",c:"#00f0ff"},{id:2,l:"DEL",c:"#ff3333"},{id:3,l:"SCL",c:"#ffff00"},{id:4,l:"ROT",c:"#ff00ff"}].forEach((m, i) => {
+                            const ox = x - 90 + (i * 55);
+                            bioCtx.strokeStyle = m.c; if(toolMode === m.id) bioCtx.strokeRect(ox, y - 110, 45, 40);
+                            bioCtx.fillStyle = m.c; bioCtx.fillText(m.l, ox + 8, y - 85);
+                        });
                         if (actionPinch) {
-                            if (!isPinching) {
-                                isPinching = true;
-                                startGridPos = { x: gx, y: gy, z: gz };
-                            } else {
-                                // Constrain to single axis movement from start point
-                                let dx = Math.abs(gx - startGridPos.x);
-                                let dy = Math.abs(gy - startGridPos.y);
-                                let dz = Math.abs(gz - startGridPos.z);
-                                if (dx >= dy && dx >= dz) { gy = startGridPos.y; gz = startGridPos.z; }
-                                else if (dy >= dx && dy >= dz) { gx = startGridPos.x; gz = startGridPos.z; }
-                                else { gx = startGridPos.x; gy = startGridPos.y; }
-                            }
-                            drawProgress(bioCtx, mx, my, 1, "#ffffff");
-                        }
+                            actionTimer += 16; drawProgress(bioCtx, mx, my, (actionTimer % HOLD_DURATION)/HOLD_DURATION, "#00ff00");
+                            if (actionTimer >= HOLD_DURATION) { toolMode = (toolMode % 4) + 1; actionTimer = 1; }
+                        } else actionTimer = 0;
+                    } 
+                    // 3. ACTIVE TOOL EXECUTION
+                    else {
+                        const worldPos = new THREE.Vector3((0.5 - midX) * 28, (0.5 - midY) * 20, 0);
+                        const localPos = voxelGroup.worldToLocal(worldPos.clone());
+                        
+                        if (toolMode === 1 || toolMode === 2) {
+                            // X, Y, Z SNAP LOGIC
+                            let gx = Math.round(localPos.x / gridSize);
+                            let gy = Math.round(localPos.y / gridSize);
+                            let gz = Math.round(localPos.z / gridSize);
+                            
+                            ghostVoxel.visible = true;
+                            ghostVoxel.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx * gridSize, gy * gridSize, gz * gridSize)));
+                            ghostVoxel.material.color.set(colorPalette[colorIdx]);
 
-                        ghostVoxel.visible = true;
-                        ghostVoxel.position.copy(voxelGroup.localToWorld(new THREE.Vector3(gx * gridSize, gy * gridSize, gz * gridSize)));
-                        ghostVoxel.scale.set(gridSize, gridSize, gridSize);
-                        ghostVoxel.material.color.set(palette[colorIdx]);
-                        ghostVoxel.material.emissive.set(palette[colorIdx]);
-
-                        // RELEASE TO PLACE
-                        if (!actionPinch && isPinching) {
-                            const key = `${gx},${gy},${gz}`;
-                            if (toolMode === 1 && !placedVoxels.has(key)) {
-                                const v = createVoxel(gx, gy, gz, palette[colorIdx]); 
-                                voxelGroup.add(v); placedVoxels.set(key, v);
-                            } else if (toolMode === 2 && placedVoxels.has(key)) {
-                                voxelGroup.remove(placedVoxels.get(key)); placedVoxels.delete(key);
-                            } else if (toolMode === 5) {
-                                textInput.style.display = 'block'; textInput.focus(); isTyping = true;
+                            if (actionPinch) {
+                                actionTimer += 16; drawProgress(bioCtx, mx, my, Math.min(actionTimer/HOLD_DURATION, 1), "#ffffff");
+                                if (actionTimer >= HOLD_DURATION) {
+                                    const key = `${gx},${gy},${gz}`;
+                                    if (toolMode === 1 && !placedVoxels.has(key)) {
+                                        const v = createFinalCube(gx, gy, gz, colorPalette[colorIdx]);
+                                        voxelGroup.add(v); placedVoxels.set(key, v);
+                                    } else if (toolMode === 2 && placedVoxels.has(key)) {
+                                        voxelGroup.remove(placedVoxels.get(key)); placedVoxels.delete(key);
+                                    }
+                                    countEl.innerText = placedVoxels.size; actionTimer = 150; 
+                                }
+                            } else actionTimer = 0;
+                        } 
+                        else if (actionPinch) {
+                            // SLIDER TOOLS: SCALE & ROTATE
+                            if (slideStartX === null) { slideStartX = thumb.x; startVal = (toolMode === 3) ? gridSize : voxelGroup.rotation.y; }
+                            const delta = (thumb.x - slideStartX) * 8;
+                            
+                            if (toolMode === 3) { // SCALE
+                                gridSize = Math.max(0.2, Math.min(4.0, startVal - delta));
+                                voxelGroup.children.forEach(c => { 
+                                    c.position.set(c.origPos.x * gridSize, c.origPos.y * gridSize, c.origPos.z * gridSize); 
+                                    c.scale.set(1, 1, 1); // Internal geometry is scaled by gridSize
+                                });
+                            } else if (toolMode === 4) { // ROTATE
+                                voxelGroup.rotation.y = startVal - delta;
                             }
-                            countEl.innerText = placedVoxels.size;
-                            isPinching = false;
-                        }
-                    } else if (actionPinch) {
-                        if (slideStartX === null) { slideStartX = thumb.x; startVal = (toolMode === 3) ? gridSize : voxelGroup.rotation.y; }
-                        const delta = (thumb.x - slideStartX) * 8;
-                        if (toolMode === 3) {
-                            gridSize = Math.max(0.05, Math.min(4.0, startVal - delta));
-                            voxelGroup.children.forEach(c => { 
-                                c.position.set(c.origPos.x * gridSize, c.origPos.y * gridSize, c.origPos.z * gridSize); 
-                                c.scale.set(gridSize, gridSize, gridSize); 
-                            });
-                        } else {
-                            voxelGroup.rotation.y = startVal - delta;
-                        }
-                    } else slideStartX = null;
+                        } else slideStartX = null;
+                    }
                 }
-
-                // UI Menus Triggers (Keep same as original code)
-                if (palPinch && !menuOpen) {
-                    palTimer += 16; drawProgress(bioCtx, mid.x * bioCanvas.width, mid.y * bioCanvas.height, Math.min(palTimer/HOLD_DURATION, 1), "#ffffff");
-                    if (palTimer >= HOLD_DURATION) { paletteOpen = !paletteOpen; palPos = { x: mx, y: my }; palTimer = -500; }
-                } else if (palTimer < 0) palTimer += 16; else palTimer = 0;
-
-                if (menuPinch && !paletteOpen) {
-                    menuTimer += 16; drawProgress(bioCtx, mx, my, Math.min(menuTimer/HOLD_DURATION, 1), "#00f0ff");
-                    if (menuTimer >= HOLD_DURATION) { menuOpen = !menuOpen; if (menuOpen) menuPos = { x: mx, y: my }; menuTimer = -500; }
-                } else if (menuTimer < 0) menuTimer += 16; else menuTimer = 0;
-
-                modeEl.innerText = ["", "ADD", "DELETE", "SCALE", "ROTATE", "TEXT"][toolMode];
-                colorEl.innerText = colorNames[colorIdx]; colorEl.style.color = `#${palette[colorIdx].toString(16).padStart(6,'0')}`;
+                modeEl.innerText = ["", "ADD", "DELETE", "SCALE", "ROTATE"][toolMode];
+                colorEl.innerText = colorNames[colorIdx]; colorEl.style.color = `#${colorPalette[colorIdx].toString(16).padStart(6,'0')}`;
             }
         }
 
         const hands = new Hands({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
         hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
         hands.onResults(onResults);
+        
         new Camera(videoElement, { onFrame: async () => { 
-            bioCanvas.width = videoElement.videoWidth; bioCanvas.height = videoElement.videoHeight; await hands.send({image: videoElement}); 
+            bioCanvas.width = videoElement.videoWidth; 
+            bioCanvas.height = videoElement.videoHeight; 
+            await hands.send({image: videoElement}); 
         }, width: 1280, height: 720 }).start();
 
-        function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); }
+        function animate() { 
+            requestAnimationFrame(animate); 
+            renderer.render(scene, camera); 
+        }
         animate();
     </script>
 </body>
