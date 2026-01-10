@@ -2,32 +2,29 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Voxel Architect v6.0 - 3D VR Sync</title>
+    <title>Voxel Architect v7.0 - Spatial 3D</title>
     <style>
         body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
-        /* Removed scaleX(-1) to handle mirroring in the logic for front-camera natural feel */
-        #input_video { position: absolute; width: 100vw; height: 100vh; object-fit: cover; z-index: 1; opacity: 0.4; }
+        /* Removed mirror transform for back camera use */
+        #input_video { position: absolute; width: 100vw; height: 100vh; object-fit: cover; z-index: 1; }
         #three_canvas { position: absolute; top: 0; left: 0; z-index: 5; pointer-events: none; }
         #biometric_canvas { position: absolute; width: 100vw; height: 100vh; z-index: 10; pointer-events: none; }
         #ui { 
             position: absolute; top: 20px; left: 20px; z-index: 100;
             color: #00f0ff; font-weight: bold; font-size: 14px;
             text-shadow: 0 0 10px #00f0ff; border-left: 3px solid #00f0ff; padding-left: 15px;
-            background: rgba(0,0,0,0.8); padding: 15px; border-radius: 0 10px 10px 0;
+            background: rgba(0,0,0,0.7); padding: 15px;
         }
         .stat-val { color: #fff; }
     </style>
 </head>
 <body>
     <div id="ui">
-        <div>CORE_CONSULTANT: VR_ARCHITECT_v6.0</div>
-        <div>STATE: <span id="mode" class="stat-val">INITIALIZING</span></div>
-        <div>DEPTH_Z: <span id="depth_val" class="stat-val">0.0</span></div>
-        <div>VOXELS: <span id="count" class="stat-val">0</span></div>
-        <hr style="border:0; border-top:1px solid #333; margin:10px 0;">
-        <div style="font-size: 10px; color: #00ff00;">DRAW: PINCH (Index + Thumb)</div>
-        <div style="font-size: 10px; color: #ff3333;">ERASE: PINCH (L) + POINT (R)</div>
-        <div style="font-size: 10px; color: #ffff00;">DEPTH: MOVE HAND CLOSER/FARTHER</div>
+        <div>CORE_SYNC: SPATIAL_ARCHITECT_v7.0</div>
+        <div>MODE: <span id="mode" class="stat-val">INITIALIZING</span></div>
+        <div>DEPTH: <span id="depth_val" class="stat-val">0</span></div>
+        <div style="font-size: 10px; margin-top: 5px; color: #00ff00;">PINCH: DRAW IN 3D SPACE</div>
+        <div style="font-size: 10px; color: #ff3333;">L-PINCH + R-POINT: ERASE VOLUME</div>
     </div>
 
     <video id="input_video" autoplay playsinline></video>
@@ -43,72 +40,44 @@
         const bioCanvas = document.getElementById('biometric_canvas');
         const bioCtx = bioCanvas.getContext('2d');
         const modeEl = document.getElementById('mode');
-        const countEl = document.getElementById('count');
         const depthEl = document.getElementById('depth_val');
 
-        // --- THREE.JS SETUP ---
+        // --- SPATIAL THREE.JS SETUP ---
         const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('three_canvas'), antialias: true, alpha: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
 
         const voxelGroup = new THREE.Group();
         scene.add(voxelGroup);
-        const currentSketch = new THREE.Group();
-        voxelGroup.add(currentSketch);
 
         const gridSize = 1.0; 
         const placedVoxels = new Map();
         
-        // 3D Crosshair
+        // 3D Crosshair Cursor
         const crosshair = new THREE.Mesh(
             new THREE.BoxGeometry(gridSize, gridSize, gridSize),
             new THREE.MeshBasicMaterial({ color: 0x00f0ff, wireframe: true, transparent: true, opacity: 0.8 })
         );
         scene.add(crosshair);
 
-        scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-        const sun = new THREE.DirectionalLight(0xffffff, 1.0);
-        sun.position.set(10, 10, 10);
-        scene.add(sun);
-        camera.position.z = 25;
+        camera.position.z = 15;
+        scene.add(new THREE.AmbientLight(0xffffff, 0.7));
 
-        // --- LOGIC VARIABLES ---
-        let smoothedLandmarks = { Left: [], Right: [] };
-        let globalColorIndex = 0;
-        const colorPalette = [0x00f0ff, 0xff0055, 0x00ff88, 0xffff00, 0xff00ff, 0xffffff];
-        
-        let isBuilding = false;
-        let isErasing = false;
         let buildTimer = 0;
         let eraseTimer = 0;
-        const INTENT_HOLD = 400; 
-        const pinchThreshold = 0.04;
+        const colorPalette = [0x00f0ff, 0xff0055, 0x00ff88, 0xffff00];
+        let globalColorIndex = 0;
 
-        // --- COORDINATE REMAPPING (FRONT CAMERA) ---
-        function get3DCoords(landmark) {
-            // Invert X for front camera mirroring
-            const x = (0.5 - landmark.x) * 35; 
-            const y = (0.5 - landmark.y) * 20;
-            // Map MediaPipe Z (relative depth) to scene Z
-            // landmark.z is usually negative (closer to camera)
-            const z = (landmark.z * -50); 
+        // --- COORDINATE REMAPPING (BACK CAMERA / ENVIRONMENT) ---
+        function getSpatialCoords(landmark) {
+            // X is natural (not flipped) for back camera
+            const x = (landmark.x - 0.5) * 28; 
+            const y = (0.5 - landmark.y) * 18;
+            // MediaPipe Z represents depth relative to the hand's palm center
+            // We scale it to create a 3D "Drawing Box"
+            const z = landmark.z * -40; 
             return new THREE.Vector3(x, y, z);
-        }
-
-        function drawCyberHand(ctx, landmarks) {
-            ctx.shadowBlur = 15; ctx.shadowColor = "#00f0ff";
-            ctx.beginPath(); ctx.strokeStyle = "rgba(0, 240, 255, 0.8)"; ctx.lineWidth = 2;
-            const CONNECTIONS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[9,10],[10,11],[11,12],[13,14],[14,15],[15,16],[0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17]];
-            CONNECTIONS.forEach(([a, b]) => {
-                ctx.moveTo(landmarks[a].x * bioCanvas.width, landmarks[a].y * bioCanvas.height);
-                ctx.lineTo(landmarks[b].x * bioCanvas.width, landmarks[b].y * bioCanvas.height);
-            });
-            ctx.stroke();
-            landmarks.forEach(pt => {
-                ctx.fillStyle = "#fff";
-                ctx.fillRect(pt.x * bioCanvas.width - 2, pt.y * bioCanvas.height - 2, 4, 4);
-            });
         }
 
         function onResults(results) {
@@ -117,83 +86,74 @@
             
             if (!results.multiHandLandmarks) return;
 
-            let lHand = null, rHand = null;
             results.multiHandedness.forEach((hand, idx) => {
                 const landmarks = results.multiHandLandmarks[idx];
-                drawCyberHand(bioCtx, landmarks);
-                if(hand.label === 'Right') lHand = landmarks; // MediaPipe flips labels often on front cam
-                if(hand.label === 'Left') rHand = landmarks;
-            });
-
-            if (rHand) {
-                const thumbTip = rHand[4], indexTip = rHand[8];
-                const pinchingNow = Math.hypot(thumbTip.x-indexTip.x, thumbTip.y-indexTip.y) < pinchThreshold;
                 
-                const worldPos = get3DCoords(indexTip);
-                const localPos = voxelGroup.worldToLocal(worldPos.clone());
+                // Draw skeleton (non-mirrored)
+                bioCtx.strokeStyle = "#00f0ff";
+                bioCtx.lineWidth = 2;
+                landmarks.forEach(p => bioCtx.strokeRect(p.x * bioCanvas.width, p.y * bioCanvas.height, 2, 2));
+
+                const thumbTip = landmarks[4];
+                const indexTip = landmarks[8];
+                const pinching = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y) < 0.04;
+
+                const spatialPos = getSpatialCoords(indexTip);
                 
                 // 3D Grid Snapping
-                let gx = Math.round(localPos.x / gridSize) * gridSize;
-                let gy = Math.round(localPos.y / gridSize) * gridSize;
-                let gz = Math.round(localPos.z / gridSize) * gridSize;
+                let gx = Math.round(spatialPos.x / gridSize) * gridSize;
+                let gy = Math.round(spatialPos.y / gridSize) * gridSize;
+                let gz = Math.round(spatialPos.z / gridSize) * gridSize;
 
-                depthEl.innerText = gz.toFixed(1);
                 crosshair.visible = true;
                 crosshair.position.set(gx, gy, gz);
+                depthEl.innerText = gz.toFixed(1);
 
-                // Build Logic
-                if (pinchingNow) {
-                    if (buildTimer < INTENT_HOLD) {
-                        buildTimer += 16;
-                        modeEl.innerText = "SYNCING_DEPTH...";
-                    } else {
-                        const key = `${gx},${gy},${gz}`;
-                        if (!placedVoxels.has(key)) {
-                            const cube = createFinalCube(gx, gy, gz);
-                            voxelGroup.add(cube);
-                            placedVoxels.set(key, cube);
-                            countEl.innerText = placedVoxels.size;
-                        }
-                        modeEl.innerText = "CONSTRUCTING_3D";
+                if (pinching) {
+                    const key = `${gx},${gy},${gz}`;
+                    if (!placedVoxels.has(key)) {
+                        const cube = new THREE.Mesh(
+                            new THREE.BoxGeometry(gridSize * 0.9, gridSize * 0.9, gridSize * 0.9),
+                            new THREE.MeshPhongMaterial({ color: 0x001122, emissive: colorPalette[globalColorIndex], emissiveIntensity: 0.5 })
+                        );
+                        cube.position.set(gx, gy, gz);
+                        voxelGroup.add(cube);
+                        placedVoxels.set(key, cube);
+                        modeEl.innerText = "SPATIAL_BUILDING";
                     }
                 } else {
-                    buildTimer = 0;
-                    modeEl.innerText = "NAVIGATING_VR";
+                    modeEl.innerText = "SPATIAL_SCANNING";
                 }
-            }
-        }
-
-        function createFinalCube(x, y, z) {
-            const g = new THREE.BoxGeometry(gridSize*0.9, gridSize*0.9, gridSize*0.9);
-            const m = new THREE.MeshPhongMaterial({ 
-                color: 0x001122, 
-                emissive: colorPalette[globalColorIndex], 
-                emissiveIntensity: 0.5,
-                transparent: true,
-                opacity: 0.9 
             });
-            const mesh = new THREE.Mesh(g, m);
-            mesh.position.set(x, y, z);
-            mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(g), new THREE.LineBasicMaterial({ color: colorPalette[globalColorIndex] })));
-            return mesh;
         }
 
+        // --- SYSTEM INITIALIZATION ---
         const hands = new Hands({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
-        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+        hands.setOptions({ 
+            maxNumHands: 2, 
+            modelComplexity: 1, 
+            minDetectionConfidence: 0.7, 
+            minTrackingConfidence: 0.7 
+        });
         hands.onResults(onResults);
 
-        new Camera(videoElement, { 
-            onFrame: async () => { 
-                bioCanvas.width = videoElement.videoWidth; 
-                bioCanvas.height = videoElement.videoHeight; 
-                await hands.send({image: videoElement}); 
-            } 
-        }).start();
+        // FORCE BACK CAMERA
+        const cameraDevice = new Camera(videoElement, {
+            onFrame: async () => {
+                bioCanvas.width = videoElement.videoWidth;
+                bioCanvas.height = videoElement.videoHeight;
+                await hands.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720,
+            facingMode: 'environment' // BACK CAMERA
+        });
+        cameraDevice.start();
 
         function animate() { 
             requestAnimationFrame(animate); 
-            // Subtle rotation based on mouse or time to show 3D volume
-            voxelGroup.rotation.y += 0.002; 
+            // Voxel group slowly oscillates so you can see the 3D depth from any angle
+            voxelGroup.rotation.y += 0.005; 
             renderer.render(scene, camera); 
         }
         animate();
